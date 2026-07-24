@@ -1,0 +1,962 @@
+/* =====================================================================
+   鋼機工廠(kouki) — ui.js
+   ---------------------------------------------------------------------
+   pure ESM。import 時点では DOM に一切触れない。createUI(root, hooks) が
+   呼ばれて初めて root 以下に画面一式を構築する。
+   画面遷移は data-screen 属性を持つ要素の hidden 切替 + フェード。
+   ===================================================================== */
+
+/* ---- 小さな DOM ビルダ ---- */
+function h(tag, props, kids) {
+  var e = document.createElement(tag);
+  if (props) {
+    for (var k in props) {
+      if (!Object.prototype.hasOwnProperty.call(props, k)) continue;
+      var v = props[k];
+      if (v == null) continue;
+      if (k === 'class') e.className = v;
+      else if (k === 'html') e.innerHTML = v;
+      else if (k === 'dataset') { for (var dk in v) e.dataset[dk] = v[dk]; }
+      else if (k.slice(0, 2) === 'on' && typeof v === 'function') e.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k in e) { try { e[k] = v; } catch (err) { e.setAttribute(k, v); } }
+      else e.setAttribute(k, v);
+    }
+  }
+  (kids || []).forEach(function (c) {
+    if (c == null || c === false) return;
+    e.appendChild((typeof c === 'string' || typeof c === 'number') ? document.createTextNode(String(c)) : c);
+  });
+  return e;
+}
+function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+function mount(el, kids) { clear(el); (kids || []).forEach(function (c) { if (c) el.appendChild(c); }); return el; }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function pct(v, max) { return clamp((max > 0 ? (v / max) : 0) * 100, 0, 100); }
+
+/* ---- パーツカテゴリ定義(hangar タブ) ---- */
+var CATS = [
+  { key: 'frame', label: '躯体', partKey: 'frame' },
+  { key: 'legs', label: '脚部', partKey: 'legs' },
+  { key: 'gen', label: '動力炉', partKey: 'gen' },
+  { key: 'armor', label: '装甲', partKey: 'armor' },
+  { key: 'wpnR', label: '右腕', partKey: 'wpn' },
+  { key: 'wpnL', label: '左腕', partKey: 'wpn' },
+  { key: 'ai', label: '戦術OS', partKey: 'ai' }
+];
+var COLOR_PRESETS = ['#8fb3c7', '#c78f8f', '#8fc79a', '#c7b38f', '#a98fc7', '#c78fb3', '#6b7280', '#d7d7d7'];
+var RANK_ORDER = ['E', 'D', 'C', 'B', 'A', 'S'];
+var DEX_CATS = [
+  { partKey: 'frame', label: '躯体' },
+  { partKey: 'legs', label: '脚部' },
+  { partKey: 'gen', label: '動力炉' },
+  { partKey: 'armor', label: '装甲' },
+  { partKey: 'wpn', label: '武装' },
+  { partKey: 'ai', label: '戦術OS' }
+];
+var DEFAULT_MAX = { hp: 1200, speed: 120, evasion: 60, defense: 0.45, enOut: 40 };
+
+function calcGrade(stats, maxRef) {
+  if (!stats || !stats.valid) return '—';
+  var mx = maxRef || DEFAULT_MAX;
+  var score = (stats.hp / mx.hp) + (stats.speed / mx.speed) + (stats.evasion * 100 / mx.evasion) +
+    (stats.defense / mx.defense) + (stats.enOut / mx.enOut);
+  score = score / 5;
+  if (score >= 1.15) return 'S';
+  if (score >= 0.95) return 'A';
+  if (score >= 0.75) return 'B';
+  if (score >= 0.55) return 'C';
+  return 'D';
+}
+function fmtDuration(sec) {
+  sec = Math.max(0, Number(sec) || 0);
+  var m = Math.floor(sec / 60), s = sec - m * 60;
+  if (m > 0) return m + ':' + (s < 10 ? '0' : '') + s.toFixed(1);
+  return s.toFixed(1) + 's';
+}
+/* ---- 墓場: 没日 YYYYMMDD → YYYY.MM.DD 表示(それ以外の形式はそのまま) ---- */
+function fmtKiaDate(kia) {
+  if (!kia) return '';
+  var s = String(kia);
+  if (/^\d{8}$/.test(s)) return s.slice(0, 4) + '.' + s.slice(4, 6) + '.' + s.slice(6, 8);
+  return s;
+}
+/* ---- 武器の交戦帯域チップ(Ver4: part.band。無ければ非表示=後方互換) ---- */
+var BAND_LABELS = { melee: '白兵', short: '短距離', mid: '中距離', long: '遠距離' };
+function bandChip(band) {
+  if (!band || !BAND_LABELS[band]) return null;
+  return h('span', { class: 'band-chip band-' + band }, [BAND_LABELS[band]]);
+}
+function partStatPairs(catKey, part) {
+  if (!part) return [];
+  switch (catKey) {
+    case 'frame': return [['HP', part.hp], ['積載', part.capacity]];
+    case 'legs': return [['種別', part.kind], ['速度', part.speed], ['旋回', part.turn], ['回避', Math.round(part.evasion * 100) + '%'], ['EN消費', part.drain]];
+    case 'gen': return [['出力', part.output + '/s'], ['ENタンク', part.cap]];
+    case 'armor': return [['軽減', Math.round((part.defense || 0) * 100) + '%'], ['回避補正', '-' + (part.evaPenalty || 0)]];
+    case 'wpnR': case 'wpnL': return [['種別', part.kind], ['威力', part.dmg], ['射程', part.range + 'm'], ['命中', part.acc + '%'], ['CT', part.cooldown + 's']];
+    case 'ai': return [['交戦距離', part.engage + 'm'], ['攻撃性', Math.round((part.aggression || 0) * 100) + '%'], ['離脱', part.kite]];
+    default: return [];
+  }
+}
+
+/* ---- battle: 実況ログ行ビルダ(export) ---- */
+export function makeLogLine(role, roleLabel, color, text) {
+  var isSys = role === 'sys';
+  var kids = [];
+  if (roleLabel) {
+    kids.push(h('span', {
+      class: 'chip' + (isSys ? ' sys' : ''),
+      style: color ? ('border-color:' + color + ';color:' + color) : null
+    }, [roleLabel]));
+  }
+  kids.push(h('span', { class: 'txt' + (isSys ? ' sys' : '') }, [text]));
+  return h('div', { class: 'line role-' + role }, kids);
+}
+
+/* ---- battle: 実況ログ フィルタ定義(Ver5: 実況席+無線を「音声」に統合) ---- */
+var LOG_FILTERS = [
+  { key: 'all', label: 'すべて' },
+  { key: 'voice', label: '音声' },
+  { key: 'sys', label: '管制' }
+];
+
+/* ---- 結果シェアボタン(export不要・showResult/showAftermath 共通実装。../lib/share.js の window.FableShare を利用) ---- */
+function shareBtnEl(shareData, label) {
+  var btn = h('button', { class: 'primary' }, [label || '📤 結果をシェア']);
+  btn.addEventListener('click', function () {
+    if (window.FableShare && shareData) window.FableShare.share(shareData);
+  });
+  return btn;
+}
+/* ---- リプレイURLコピー(showResult/showAftermath 共通。URLが無い試合=降参などは出さない) ---- */
+function replayBtnEl(url) {
+  if (!url) return null;
+  var LABEL = '📼 リプレイURLをコピー';
+  var btn = h('button', {}, [LABEL]);
+  btn.addEventListener('click', function () {
+    var done = function () {
+      btn.textContent = '✓ コピーしました(貼るだけで同じ試合が再生されます)';
+      setTimeout(function () { btn.textContent = LABEL; }, 2400);
+    };
+    var fallback = function () { window.prompt('このURLをコピーしてください', url); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(done, fallback);
+    } else fallback();
+  });
+  return btn;
+}
+/* ---- 戦果見出しの色分類(WIN=緑/LOSE=赤/DRAW=グレー/SURRENDER=琥珀。winTxt文字列で判定) ---- */
+function aftermathCls(winTxt) {
+  var t = String(winTxt || '').toUpperCase();
+  if (t === 'WIN') return 'win';
+  if (t === 'LOSE') return 'lose';
+  if (t === 'SURRENDER') return 'surrender';
+  return 'draw';
+}
+
+export function createUI(root, hooks) {
+  hooks = hooks || {};
+  clear(root);
+
+  var state = { user: null, hangarTab: 'frame', lastHangar: null, lastCampaign: null, sortieField: null };
+  var els = { screens: {} };
+
+  /* ===================== title ===================== */
+  var loginArea = h('div', { class: 'user-area' });
+  var creditsAmountText = h('span', { class: 'credits-amount' }, ['所持クレジット: 0 C']);
+  var medalsText = h('span', { class: 'medals-amount' }, ['🎖 0']);
+  var creditsLine = h('div', { class: 'credits-line' }, [creditsAmountText, medalsText]);
+
+  /* ---- パイロットロースター(タイトル。Ver5: 3人ロスター+墓場リンク。名前変更UIは廃止) ---- */
+  var pilotRosterEl = h('div', { class: 'pilot-roster' });
+  var graveLink = h('button', { class: 'small ghost grave-link' }, ['⚰ 墓場(0)']);
+  graveLink.addEventListener('click', function () { hooks.onShowGrave && hooks.onShowGrave(); });
+
+  function renderPilotSlot(p, idx) {
+    if (!p) {
+      var regInput = h('input', { type: 'text', maxlength: 12, class: 'pilot-name-input', placeholder: 'パイロット名' });
+      var regBtn = h('button', { class: 'small primary' }, ['+ 登録']);
+      function doRegister() {
+        var v = (regInput.value || '').trim().slice(0, 12);
+        if (!v) { regInput.focus(); return; }
+        hooks.onRegisterPilot && hooks.onRegisterPilot(v, idx);
+      }
+      regBtn.addEventListener('click', doRegister);
+      regInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') doRegister(); });
+      return h('div', { class: 'pilot-slot empty' }, [
+        h('div', { class: 'pilot-slot-empty-label' }, ['— 空き枠 —']),
+        h('div', { class: 'pilot-slot-register' }, [regInput, regBtn])
+      ]);
+    }
+    var injured = (p.injury || 0) > 0;
+    var fireBtn = h('button', { class: 'small ghost pilot-fire-btn' }, ['解雇']);
+    fireBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      hooks.onFirePilot && hooks.onFirePilot(idx);
+    });
+    var slotEl = h('div', { class: 'pilot-slot' + (p.active ? ' active' : '') }, [
+      h('div', { class: 'pilot-slot-row1' }, [
+        p.active ? h('span', { class: 'pilot-active-mark' }, ['▶']) : null,
+        h('span', { class: 'pilot-name' }, [p.name || 'PILOT']),
+        h('span', { class: 'pilot-level' }, ['Lv' + (p.level || 1)])
+      ]),
+      h('div', { class: 'pilot-slot-row2' }, [
+        h('span', { class: 'pilot-honor' }, ['名誉 ' + (p.honor || 0)]),
+        h('span', { class: 'pilot-status' + (injured ? ' injury' : ' ok') }, [injured ? ('負傷(残' + p.injury + '戦)') : '健在'])
+      ]),
+      h('div', { class: 'pilot-slot-row3' }, [fireBtn])
+    ]);
+    slotEl.addEventListener('click', function () { hooks.onSelectPilot && hooks.onSelectPilot(idx); });
+    return slotEl;
+  }
+  function renderPilotRoster(pilots) {
+    pilots = pilots || [];
+    var slots = [];
+    for (var i = 0; i < 3; i++) slots.push(renderPilotSlot(pilots[i], i));
+    mount(pilotRosterEl, slots);
+  }
+  renderPilotRoster([null, null, null]);
+  var pilotCard = h('div', { class: 'pilot-panel' }, [pilotRosterEl, graveLink]);
+
+  var titleScreen = h('section', { class: 'screen', dataset: { screen: 'title' } }, [
+    h('div', { class: 'title-wrap' }, [
+      h('div', { class: 'logo' }, [
+        h('div', { class: 'main' }, ['鋼機工廠']),
+        h('div', { class: 'sub' }, ['K O K I   K O S H O'])
+      ]),
+      h('p', { class: 'title-desc' }, [
+        '組み上げた鋼機(こうき)が自律で戦う。試合は実況/レーダー/3Dの三面で観戦できる。',
+        h('br'), '— いにしえの自律対戦シミュレータへのオマージュ —'
+      ]),
+      h('div', { class: 'menu' }, [
+        h('button', { class: 'primary', onclick: function () { ui.showScreen('sortie'); } }, ['▶ 出撃(演習)']),
+        h('button', { onclick: function () { ui.showScreen('hangar'); } }, ['⚙ 工廠(機体を組む)']),
+        h('button', { onclick: function () { ui.showScreen('arena'); } }, ['◈ 闘技場(ネット対戦)']),
+        h('button', { onclick: function () { ui.showScreen('collection'); } }, ['▦ カタログ'])
+      ]),
+      pilotCard,
+      creditsLine,
+      loginArea
+    ]),
+    h('div', { class: 'title-footer' }, [
+      h('a', { class: 'link', href: '../' }, ['← 一覧へ'])
+    ])
+  ]);
+  els.screens.title = titleScreen;
+
+  function renderLoginArea() {
+    if (state.user) {
+      mount(loginArea, [
+        h('span', {}, ['識別済: ' + (state.user.name || state.user.email || 'PILOT')]),
+        h('button', { class: 'small ghost', onclick: function () { hooks.onLogout && hooks.onLogout(); } }, ['ログアウト'])
+      ]);
+    } else {
+      mount(loginArea, [
+        h('button', { class: 'small ghost', onclick: function () { hooks.onLogin && hooks.onLogin(); } }, ['ログイン'])
+      ]);
+    }
+  }
+  renderLoginArea();
+
+  /* ===================== hangar ===================== */
+  var statsPanel = h('div', { class: 'panel' });
+  var tabsRow = h('div', { class: 'tabs' });
+  var cardList = h('div', { class: 'card-list' });
+  var colorRow = h('div', { class: 'color-row' });
+  var nameInput = h('input', { type: 'text', maxlength: 16, placeholder: '機体名(自分だけに表示)' });
+  var slotGrid = h('div', { class: 'slot-grid' });
+  var equipBtn = h('button', { class: 'primary', style: 'width:100%' }, ['この機体で出撃']);
+
+  nameInput.addEventListener('input', function () {
+    if (state.lastHangar && state.lastHangar.build) {
+      state.lastHangar.build.name = nameInput.value;
+    }
+  });
+  equipBtn.addEventListener('click', function () {
+    if (state.lastHangar && state.lastHangar.build) hooks.onEquip && hooks.onEquip(state.lastHangar.build);
+  });
+
+  var hangarScreen = h('section', { class: 'screen', dataset: { screen: 'hangar' } }, [
+    h('h2', { class: 'screen-title' }, ['工廠 — HANGAR BAY', h('a', { class: 'link', href: '#', onclick: function (e) { e.preventDefault(); ui.showScreen('title'); } }, ['← タイトルへ'])]),
+    statsPanel,
+    h('div', { class: 'panel' }, [
+      h('h3', {}, ['パーツ選択']),
+      tabsRow,
+      cardList
+    ]),
+    h('div', { class: 'panel' }, [
+      h('h3', {}, ['カラー / 機体名']),
+      colorRow,
+      h('div', { style: 'margin-top:10px' }, [nameInput]),
+      h('p', { class: 'field-note' }, ['この名前はあなたにだけ見えます(対戦相手には識別コードのみ表示)'])
+    ]),
+    h('div', { class: 'panel' }, [
+      h('h3', {}, ['保存スロット']),
+      slotGrid
+    ]),
+    equipBtn
+  ]);
+  els.screens.hangar = hangarScreen;
+
+  function renderStatsPanel() {
+    var st = state.lastHangar || {};
+    var stats = st.stats || {};
+    var maxRef = st.statMax || DEFAULT_MAX;
+    var weightRatio = stats.capacity > 0 ? stats.weight / stats.capacity : 0;
+    var over = weightRatio > 1 || stats.valid === false;
+    function gauge(label, val, max, opts) {
+      opts = opts || {};
+      var display = opts.fmt ? opts.fmt(val) : Math.round(val);
+      var cls = 'gauge' + (opts.danger ? ' danger' : (pct(val, max) > 85 ? ' warn' : ''));
+      return h('div', { class: 'gauge-row' }, [
+        h('div', { class: 'lbl' }, [label, h('b', {}, [String(display)])]),
+        h('div', { class: cls }, [h('i', { style: 'width:' + pct(val, max) + '%' })])
+      ]);
+    }
+    mount(statsPanel, [
+      h('h3', {}, ['機体ステータス']),
+      h('canvas', { class: 'mech-preview' }),
+      gauge('HP', stats.hp || 0, maxRef.hp),
+      gauge('速度', stats.speed || 0, maxRef.speed),
+      gauge('回避', (stats.evasion || 0) * 100, maxRef.evasion, { fmt: function (v) { return Math.round(v) + '%'; } }),
+      gauge('防御', (stats.defense || 0) * 100, maxRef.defense * 100, { fmt: function (v) { return Math.round(v) + '%'; } }),
+      gauge('EN出力', stats.enOut || 0, maxRef.enOut, { fmt: function (v) { return v.toFixed ? v.toFixed(1) : v; } }),
+      gauge('重量', stats.weight || 0, Math.max(stats.capacity || 1, 1), { danger: over, fmt: function () { return (stats.weight || 0) + ' / ' + (stats.capacity || 0); } }),
+      costGauge(st, stats),
+      stats.errors && stats.errors.length ? h('p', { class: 'muted', style: 'color:var(--red)' }, [stats.errors.join(' / ')]) : null,
+      h('div', {}, [
+        h('span', { class: 'muted' }, ['総合評価 ']),
+        h('span', { class: 'grade-badge' }, [calcGrade(stats, maxRef)])
+      ]),
+      st.build ? h('p', { class: 'muted', style: 'margin-top:8px;line-height:1.8' }, [buildSummary(st)]) : null
+    ]);
+  }
+  function costGauge(st, stats) {
+    var budget = st.budget || 0;
+    var cost = stats.cost || 0;
+    var overBudget = cost > budget;
+    return h('div', { class: 'gauge-row cost-row' + (overBudget ? ' over' : '') }, [
+      h('div', { class: 'lbl' }, ['機体総額', h('b', {}, [cost.toLocaleString() + ' / ' + budget.toLocaleString() + ' C' + (overBudget ? '(予算超過)' : '')])]),
+      h('div', { class: 'gauge' + (overBudget ? ' danger' : '') }, [h('i', { style: 'width:' + pct(cost, Math.max(budget, 1)) + '%' })])
+    ]);
+  }
+  function buildSummary(st) {
+    var parts = st.parts || {};
+    var b = st.build || {};
+    function nm(catKey, id) {
+      var cat = CATS.filter(function (c) { return c.key === catKey; })[0];
+      var list = parts[cat.partKey] || [];
+      var p = list.filter(function (x) { return x.id === id; })[0];
+      return p ? p.name : '未選択';
+    }
+    return CATS.map(function (c) { return c.label + ':' + nm(c.key, b[c.key]); }).join(' / ');
+  }
+
+  function renderTabs() {
+    mount(tabsRow, CATS.map(function (c) {
+      return h('button', {
+        class: c.key === state.hangarTab ? 'active' : '',
+        onclick: function () { state.hangarTab = c.key; renderTabs(); renderCardList(); }
+      }, [c.label]);
+    }));
+  }
+  function renderCardList() {
+    var st = state.lastHangar;
+    if (!st) { mount(cardList, []); return; }
+    var cat = CATS.filter(function (c) { return c.key === state.hangarTab; })[0];
+    var list = (st.parts && st.parts[cat.partKey]) || [];
+    var budget = st.budget || 0;
+    var baseCost = (st.stats && st.stats.cost) || 0;
+    var currentId = st.build ? st.build[cat.key] : null;
+    var currentPart = list.filter(function (p) { return p.id === currentId; })[0];
+    var currentPrice = currentPart ? (currentPart.price || 0) : 0;
+    mount(cardList, list.map(function (part) {
+      var selected = part.id === currentId;
+      var stats = partStatPairs(cat.key, part);
+      var price = part.price || 0;
+      var hypCost = baseCost - currentPrice + price;
+      var overBudget = hypCost > budget;
+      var body = [
+        h('div', { class: 'row1' }, [
+          h('span', { class: 'name-wrap' }, [h('span', { class: 'name' }, [part.name]), bandChip(part.band)]),
+          h('span', { class: 'weight' }, ['重量 ' + part.weight])
+        ]),
+        part.desc ? h('div', { class: 'desc' }, [part.desc]) : null,
+        stats.length ? h('div', { class: 'stats' }, [stats.map(function (p) { return p[0] + ' ' + p[1]; }).join(' ・ ')]) : null,
+        h('div', { class: 'price-line' + (overBudget ? ' over' : '') }, [price.toLocaleString() + ' C' + (overBudget ? '(予算超過)' : '')])
+      ];
+      return h('button', {
+        class: 'part-card' + (selected ? ' selected' : ''),
+        onclick: function () {
+          if (!st.build) return;
+          st.build[cat.key] = part.id;
+          var newStats = hooks.onPartChange ? hooks.onPartChange(st.build) : null;
+          if (newStats) st.stats = newStats;
+          renderStatsPanel();
+          renderCardList();
+        }
+      }, body);
+    }));
+  }
+  function renderColorRow() {
+    var st = state.lastHangar;
+    var current = st && st.build ? st.build.color : null;
+    mount(colorRow, COLOR_PRESETS.map(function (hex) {
+      return h('button', {
+        class: 'swatch' + (hex === current ? ' selected' : ''),
+        style: 'background:' + hex,
+        onclick: function () {
+          if (!st || !st.build) return;
+          st.build.color = hex;
+          var newStats = hooks.onPartChange ? hooks.onPartChange(st.build) : null;
+          if (newStats) st.stats = newStats;
+          renderColorRow();
+        }
+      }, []);
+    }));
+  }
+  function renderSlots() {
+    var st = state.lastHangar;
+    var slots = (st && st.slots) || [];
+    var cells = [];
+    for (var i = 0; i < 8; i++) {
+      var s = slots[i] || { slot: i, build: null };
+      (function (s, idx) {
+        var hasBuild = !!s.build;
+        cells.push(h('div', { class: 'slot-card' }, [
+          h('div', { class: 'row1' }, [
+            h('span', {}, ['SLOT ' + (idx + 1)]),
+            h('span', {}, [hasBuild ? (s.cloud ? '☁' : '💾') : '—'])
+          ]),
+          h('div', { class: 'name' }, [hasBuild ? (s.build.name || '(無題)') : '空きスロット']),
+          h('div', { class: 'btns' }, [
+            h('button', {
+              class: 'small', disabled: !hasBuild,
+              onclick: function () {
+                if (!st || !s.build) return;
+                Object.assign(st.build, s.build);
+                nameInput.value = st.build.name || '';
+                var newStats = hooks.onPartChange ? hooks.onPartChange(st.build) : null;
+                if (newStats) st.stats = newStats;
+                renderStatsPanel(); renderCardList(); renderColorRow();
+                ui.toast('スロット' + (idx + 1) + 'を読み込みました');
+              }
+            }, ['読込']),
+            h('button', {
+              class: 'small',
+              onclick: function () {
+                if (!st || !st.build) return;
+                hooks.onSaveBuild && hooks.onSaveBuild(st.build, idx);
+              }
+            }, ['保存'])
+          ])
+        ]));
+      })(s, i);
+    }
+    mount(slotGrid, cells);
+  }
+
+  /* ===================== sortie(演習) ===================== */
+  var sortieBody = h('div', { class: 'col' });
+  var sortieWorldNote = h('p', { class: 'muted sortie-world-note' }, ['※敵機は並行世界から転写されたクローン機。降参はしない。']);
+  var sortieScreen = h('section', { class: 'screen', dataset: { screen: 'sortie' } }, [
+    h('h2', { class: 'screen-title' }, ['演習 — SORTIE', h('a', { class: 'link', href: '#', onclick: function (e) { e.preventDefault(); ui.showScreen('title'); } }, ['← タイトルへ'])]),
+    sortieWorldNote,
+    sortieBody
+  ]);
+  els.screens.sortie = sortieScreen;
+
+  var fieldChipsRow = h('div', { class: 'field-chip-row' });
+  var fieldChipsFade = h('div', { class: 'field-chip-fade', 'aria-hidden': 'true' }, ['»']);
+  var fieldChipsWrap = h('div', { class: 'field-chip-wrap' }, [fieldChipsRow, fieldChipsFade]);
+  var fieldDescLine = h('p', { class: 'field-desc muted' }, []);
+  var fieldPanel = h('div', { class: 'panel field-panel' }, [
+    h('h3', {}, ['戦場選択']),
+    fieldChipsWrap,
+    fieldDescLine
+  ]);
+  function updateFieldChipsScroll() {
+    var el = fieldChipsRow;
+    var atEnd = (el.scrollWidth - el.clientWidth) <= (el.scrollLeft + 2);
+    fieldChipsWrap.classList.toggle('at-end', atEnd);
+  }
+  fieldChipsRow.addEventListener('scroll', updateFieldChipsScroll);
+  if (typeof window !== 'undefined') window.addEventListener('resize', updateFieldChipsScroll);
+  function fieldOptions() {
+    var st = state.lastCampaign || {};
+    var fields = st.fields || [];
+    return [{ id: 'random', name: 'ランダム', desc: '出撃のたびに戦場をランダムに選びます。' }].concat(fields);
+  }
+  function renderFieldChips() {
+    var options = fieldOptions();
+    var current = options.filter(function (f) { return f.id === state.sortieField; })[0] || options[0];
+    fieldDescLine.textContent = current ? (current.desc || '') : '';
+    mount(fieldChipsRow, options.map(function (f) {
+      var active = f.id === state.sortieField;
+      return h('button', {
+        class: 'chip-btn' + (active ? ' active' : ''),
+        onclick: function () {
+          state.sortieField = f.id;
+          renderFieldChips();
+        },
+        onmouseenter: function () { fieldDescLine.textContent = f.desc || ''; },
+        onmouseleave: function () { renderFieldChips(); }
+      }, [f.name]);
+    }));
+    updateFieldChipsScroll();
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(updateFieldChipsScroll);
+  }
+
+  /* ===================== arena(闘技場) ===================== */
+  var arenaBody = h('div', { class: 'col' });
+  var arenaScreen = h('section', { class: 'screen', dataset: { screen: 'arena' } }, [
+    h('h2', { class: 'screen-title' }, ['闘技場 — ARENA', h('a', { class: 'link', href: '#', onclick: function (e) { e.preventDefault(); ui.showScreen('title'); } }, ['← タイトルへ'])]),
+    arenaBody
+  ]);
+  els.screens.arena = arenaScreen;
+
+  /* ===================== collection ===================== */
+  var collectionBody = h('div', { class: 'col' });
+  var collectionScreen = h('section', { class: 'screen', dataset: { screen: 'collection' } }, [
+    h('h2', { class: 'screen-title' }, ['カタログ', h('a', { class: 'link', href: '#', onclick: function (e) { e.preventDefault(); ui.showScreen('title'); } }, ['← タイトルへ'])]),
+    collectionBody
+  ]);
+  els.screens.collection = collectionScreen;
+
+  /* ===================== graveyard(墓場) ===================== */
+  var graveyardBody = h('div', { class: 'col' });
+  var graveyardScreen = h('section', { class: 'screen', dataset: { screen: 'grave' } }, [
+    h('h2', { class: 'screen-title' }, ['墓場 — MEMORIAL', h('a', { class: 'link', href: '#', onclick: function (e) { e.preventDefault(); ui.showScreen('title'); } }, ['← タイトルへ'])]),
+    graveyardBody
+  ]);
+  els.screens.grave = graveyardScreen;
+
+  /* ===================== battle ===================== */
+  var c3d = h('canvas', { class: 'c3d' });
+  var cradar = h('canvas', { class: 'cradar', hidden: true });
+  var logview = h('div', { class: 'logview', dataset: { filter: 'all' } });
+  var logFilterBtns = LOG_FILTERS.map(function (f) {
+    return h('button', {
+      class: 'chip-btn' + (f.key === 'all' ? ' active' : ''),
+      dataset: { filter: f.key },
+      onclick: function () {
+        logview.dataset.filter = f.key;
+        logFilterBtns.forEach(function (b) {
+          b.classList.toggle('active', b.dataset.filter === f.key);
+        });
+      }
+    }, [f.label]);
+  });
+  var ttsBtn = h('button', { class: 'small ghost tts-btn' }, ['🔊読み上げ']);
+  var logFilterRow = h('div', { class: 'log-filter' }, logFilterBtns.concat([
+    h('span', { class: 'log-filter-spacer' }), ttsBtn
+  ]));
+  var logWrap = h('div', { class: 'log-wrap', hidden: true }, [logFilterRow, logview]);
+  var btn3d = h('button', { class: 'active' }, ['3D']);
+  var btnRadar = h('button', {}, ['レーダー']);
+  var btnLog = h('button', {}, ['実況']);
+  var battleTabsObj = { btn3d: btn3d, btnRadar: btnRadar, btnLog: btnLog, mode: '3d' };
+  function setBattleTab(mode) {
+    battleTabsObj.mode = mode;
+    c3d.hidden = mode !== '3d';
+    cradar.hidden = mode !== 'radar';
+    logWrap.hidden = mode !== 'log';
+    [btn3d, btnRadar, btnLog].forEach(function (b) { b.classList.remove('active'); });
+    ({ '3d': btn3d, radar: btnRadar, log: btnLog })[mode].classList.add('active');
+    if (mode === 'log') { logview.scrollTop = logview.scrollHeight; }
+  }
+  btn3d.addEventListener('click', function () { setBattleTab('3d'); });
+  btnRadar.addEventListener('click', function () { setBattleTab('radar'); });
+  btnLog.addEventListener('click', function () { setBattleTab('log'); });
+
+  var hpAFill = h('i', { style: 'width:100%' });
+  var hpBFill = h('i', { style: 'width:100%' });
+  var enAFill = h('i', { style: 'width:100%' });
+  var enBFill = h('i', { style: 'width:100%' });
+  var hpAText = h('span', {}, ['1000']);
+  var hpBText = h('span', {}, ['1000']);
+  /* ammoA/ammoB は Ver3 で武装行に統合・廃止。既存コードが落ちないよう非表示ダミーとして残す(DOM未装着) */
+  var ammoAText = h('span', { class: 'ammo', hidden: true });
+  var ammoBText = h('span', { class: 'ammo', hidden: true });
+  var wpnA1Text = h('span', { class: 'wpn-name' }, ['—']);
+  var wpnA2Text = h('span', { class: 'wpn-name' }, ['—']);
+  var wpnB1Text = h('span', { class: 'wpn-name' }, ['—']);
+  var wpnB2Text = h('span', { class: 'wpn-name' }, ['—']);
+  var stanceAText = h('span', { class: 'stance-badge' }, ['—']);
+  var stanceBText = h('span', { class: 'stance-badge' }, ['—']);
+  var timeText = h('span', { class: 'time' }, ['0.0s']);
+  var speedBtn = h('button', { class: 'small', dataset: { speed: '1' } }, ['1倍速']);
+  speedBtn.addEventListener('click', function () {
+    var cur = Number(speedBtn.dataset.speed) || 1;
+    var next = cur >= 4 ? 1 : cur * 2;
+    speedBtn.dataset.speed = String(next);
+    speedBtn.textContent = next + '倍速';
+  });
+  /* ---- TGT サブ表記(戦闘開始時に game.js が「(機体名)」へ書き換える) ---- */
+  var tgtSubA = h('span', { class: 'tgt-sub' }, ['自機']);
+  var tgtSubB = h('span', { class: 'tgt-sub' }, ['敵機']);
+
+  /* ---- 部位ダメージチップ(腕R/腕L/脚/炉。data-lv は game.js が 0〜3 で更新) ---- */
+  function makePdChips() {
+    return ['腕R', '腕L', '脚', '炉'].map(function (label) {
+      return h('span', { class: 'pd-chip', dataset: { lv: '0' } }, [label]);
+    });
+  }
+  var pdChipsA = makePdChips();
+  var pdChipsB = makePdChips();
+  var pdRowA = h('div', { class: 'pd-row' }, pdChipsA);
+  var pdRowB = h('div', { class: 'pd-row' }, pdChipsB);
+
+  var pauseBtn = h('button', { class: 'small' }, ['停止']);
+  var surrenderBtn = h('button', { class: 'small danger', hidden: true }, ['🏳 降参']);
+  /* ---- Ver5後半(人間レビュー5巡目): 「結果を見る」ボタンは廃止。戦闘は止めず、戦果は CONTROL 直下の aftermathBox に表示する ---- */
+
+  var hudObj = {
+    hpAFill: hpAFill, hpBFill: hpBFill, enAFill: enAFill, enBFill: enBFill,
+    hpAText: hpAText, hpBText: hpBText, ammoA: ammoAText, ammoB: ammoBText, timeText: timeText,
+    speedBtn: speedBtn, skipBtn: null, pauseBtn: pauseBtn, surrenderBtn: surrenderBtn, resultBtn: null,
+    wpnA1: wpnA1Text, wpnA2: wpnA2Text, wpnB1: wpnB1Text, wpnB2: wpnB2Text,
+    stanceA: stanceAText, stanceB: stanceBText,
+    tgtSubA: tgtSubA, tgtSubB: tgtSubB,
+    pdA: pdChipsA, pdB: pdChipsB
+  };
+
+  var tgtBoxA = h('div', { class: 'panel tgt-box' }, [
+    h('div', { class: 'tgt-head' }, [h('span', { class: 'tgt-tag' }, ['TGT-A']), tgtSubA]),
+    h('div', { class: 'mech-hp' }, [
+      h('div', { class: 'lbl' }, ['HP', hpAText]),
+      h('div', { class: 'gauge' }, [hpAFill]),
+      h('div', { class: 'lbl' }, ['EN']),
+      h('div', { class: 'gauge warn' }, [enAFill])
+    ]),
+    h('div', { class: 'wpn-row' }, [h('span', { class: 'wpn-ico' }, ['①']), wpnA1Text]),
+    h('div', { class: 'wpn-row' }, [h('span', { class: 'wpn-ico' }, ['②']), wpnA2Text]),
+    pdRowA,
+    h('div', { class: 'stance-row' }, [h('span', { class: 'stance-lbl' }, ['戦術']), stanceAText])
+  ]);
+  var tgtBoxB = h('div', { class: 'panel tgt-box' }, [
+    h('div', { class: 'tgt-head' }, [h('span', { class: 'tgt-tag' }, ['TGT-B']), tgtSubB]),
+    h('div', { class: 'mech-hp' }, [
+      h('div', { class: 'lbl' }, ['HP', hpBText]),
+      h('div', { class: 'gauge danger' }, [hpBFill]),
+      h('div', { class: 'lbl' }, ['EN']),
+      h('div', { class: 'gauge warn' }, [enBFill])
+    ]),
+    h('div', { class: 'wpn-row' }, [h('span', { class: 'wpn-ico' }, ['①']), wpnB1Text]),
+    h('div', { class: 'wpn-row' }, [h('span', { class: 'wpn-ico' }, ['②']), wpnB2Text]),
+    pdRowB,
+    h('div', { class: 'stance-row' }, [h('span', { class: 'stance-lbl' }, ['戦術']), stanceBText])
+  ]);
+  var controlBox = h('div', { class: 'panel tgt-box control-box' }, [
+    h('div', { class: 'tgt-head' }, [h('span', { class: 'tgt-tag' }, ['CONTROL'])]),
+    h('div', { class: 'hud-bottom' }, [
+      timeText,
+      h('div', { class: 'ctl' }, [pauseBtn, speedBtn, surrenderBtn])   /* 並び: 停止・倍速・降参(スキップは廃止=倍速で足りる) */
+    ])
+  ]);
+
+  /* ---- 戦果ボックス(Ver5後半: CONTROL 直下・右ペイン内。試合終了後もステージは停止させず ui.showAftermath() で描画) ---- */
+  var aftermathBox = h('div', { class: 'panel tgt-box aftermath-box', hidden: true }, []);
+
+  var battleScreen = h('section', { class: 'screen wide', dataset: { screen: 'battle' } }, [
+    h('div', { class: 'battle-tabs' }, [btn3d, btnRadar, btnLog]),
+    h('div', { class: 'battle-layout row' }, [
+      h('div', { class: 'battle-stage' }, [c3d, cradar, logWrap]),
+      h('div', { class: 'hud' }, [
+        h('div', { class: 'tgt-row' }, [tgtBoxA, tgtBoxB]),
+        controlBox,
+        aftermathBox
+      ])
+    ])
+  ]);
+  els.screens.battle = battleScreen;
+  var battleElsCache = {
+    c3d: c3d, cradar: cradar, logview: logview,
+    logFilter: function () { return logview.dataset.filter; },
+    tabs: battleTabsObj, hud: hudObj, ttsBtn: ttsBtn
+  };
+
+  /* ===================== result ===================== */
+  var resultInner = h('div', { id: 'result-inner' });
+  var resultScreen = h('section', { class: 'screen', dataset: { screen: 'result' }, id: 'result' }, [resultInner]);
+  els.screens.result = resultScreen;
+
+  /* ===================== toast host ===================== */
+  var toastHost = h('div', { class: 'toast-host' });
+
+  mount(root, [
+    h('div', { class: 'scanlines', 'aria-hidden': 'true' }),
+    titleScreen, hangarScreen, sortieScreen, arenaScreen, collectionScreen, graveyardScreen, battleScreen, resultScreen,
+    toastHost
+  ]);
+
+  /* ===================== ui オブジェクト ===================== */
+  var ui = {
+    showScreen: function (name) {
+      Object.keys(els.screens).forEach(function (k) {
+        var s = els.screens[k];
+        if (k === name) {
+          s.hidden = false;
+          s.classList.remove('active');
+          void s.offsetWidth;
+          s.classList.add('active');
+        } else {
+          s.hidden = true;
+          s.classList.remove('active');
+        }
+      });
+    },
+
+    renderTitle: function (st) {
+      st = st || {};
+      creditsAmountText.textContent = '所持クレジット: ' + (st.credits || 0) + ' C';
+      medalsText.textContent = '🎖 ' + (st.medals || 0);
+      renderPilotRoster(st.pilots || []);
+      graveLink.textContent = '⚰ 墓場(' + (st.graveyardCount || 0) + ')';
+    },
+
+    renderHangar: function (st) {
+      state.lastHangar = st || {};
+      if (state.lastHangar.build) nameInput.value = state.lastHangar.build.name || '';
+      renderStatsPanel();
+      renderTabs();
+      renderCardList();
+      renderColorRow();
+      renderSlots();
+    },
+
+    renderCampaign: function (st) {
+      st = st || {};
+      state.lastCampaign = st;
+      if (state.sortieField == null) state.sortieField = st.selectedField || 'random';
+      renderFieldChips();
+      var daily = st.daily || { cleared: false, reward: 0, label: '本日のデイリー' };
+      var dailyBlock = h('div', { class: 'panel daily-card' }, [
+        h('div', {}, [
+          h('div', {}, [daily.label || 'デイリー演習']),
+          h('div', { class: 'muted' }, [daily.cleared ? '本日クリア済み' : ('報酬 +' + daily.reward + ' C')])
+        ]),
+        h('button', { class: 'primary', onclick: function () { hooks.onFight && hooks.onFight('daily', { fieldId: state.sortieField }); } }, ['挑戦'])
+      ]);
+      var ranks = st.ranks || RANK_ORDER.map(function (r) { return { rank: r, fights: [0, 1, 2].map(function (i) { return { idx: i, cleared: false, reward: 0 }; }) }; });
+      var blocks = ranks.map(function (r) {
+        return h('div', { class: 'panel rank-block' }, [
+          h('div', { class: 'rank-head' }, [h('div', { class: 'badge' }, [r.rank]), h('span', { class: 'muted' }, ['ランク ' + r.rank])]),
+          h('div', { class: 'fight-row' }, r.fights.map(function (f) {
+            return h('button', {
+              class: (f.cleared ? 'cleared' : '') + (f.locked ? ' locked' : ''),
+              onclick: function () {
+                if (f.locked) { return; }
+                hooks.onFight && hooks.onFight('campaign', { rank: r.rank, idx: f.idx, fieldId: state.sortieField });
+              }
+            }, [
+              h('span', {}, [f.locked ? '🔒' : (f.name || '第' + (f.idx + 1) + '戦')]),
+              h('span', { class: 'rw' }, [f.cleared ? '済 ' : '', '+' + f.reward + 'C'])
+            ]);
+          }))
+        ]);
+      });
+      mount(sortieBody, [dailyBlock, fieldPanel].concat(blocks));
+    },
+
+    renderArena: function (st) {
+      st = st || {};
+      if (!st.loggedIn) {
+        var pre = [
+          h('div', { class: 'panel arena-login' }, [
+            h('p', {}, ['あなたが工廠で組んだ機体を闘技場に登録すると、ほかの工廠長の機体と自動でマッチングして対戦します(その場で観戦できます)。勝敗でレートが上下し、ランキングを競います。']),
+            h('p', { class: 'muted' }, ['対戦相手に見えるのはサーバが発行する識別コードだけ。あなたの名前や機体名は公開されません。']),
+            h('button', { class: 'primary', onclick: function () { hooks.onLogin && hooks.onLogin(); } }, ['ログインして参加'])
+          ])
+        ];
+        var ptop = st.top || [];
+        if (ptop.length) {
+          pre.push(h('div', { class: 'panel' }, [
+            h('h3', {}, ['ランキング TOP20(閲覧)']),
+            h('table', { class: 'rank-table' }, [
+              h('thead', {}, [h('tr', {}, [h('th', {}, ['#']), h('th', {}, ['識別コード']), h('th', {}, ['R']), h('th', {}, ['W-L'])])]),
+              h('tbody', {}, ptop.map(function (t, i) {
+                return h('tr', {}, [h('td', {}, [String(i + 1)]), h('td', {}, [t.codename]), h('td', {}, [String(Math.round(t.rating))]), h('td', {}, [t.wins + '-' + t.losses])]);
+              }))
+            ])
+          ]));
+        }
+        mount(arenaBody, pre);
+        return;
+      }
+      var parts = [];
+      if (!st.myEntry) {
+        parts.push(h('div', { class: 'panel arena-login' }, [
+          h('p', {}, ['現在の機体を闘技場に登録します(識別コードはサーバが自動生成)。']),
+          h('button', { class: 'primary', onclick: function () { hooks.onArenaSubmit && hooks.onArenaSubmit(); } }, ['自機を登録する'])
+        ]));
+      } else {
+        parts.push(h('div', { class: 'panel' }, [
+          h('h3', {}, ['自機情報']),
+          h('div', { class: 'stat-line' }, ['識別コード', h('b', {}, [st.myEntry.codename])]),
+          h('div', { class: 'stat-line' }, ['レート', h('b', {}, [String(st.myEntry.rating)])]),
+          h('div', { class: 'stat-line' }, ['戦績', h('b', {}, [st.myEntry.wins + '勝 ' + st.myEntry.losses + '敗'])]),
+          h('button', { class: 'primary', style: 'width:100%;margin-top:10px', onclick: function () { hooks.onArenaFight && hooks.onArenaFight(); } }, ['対戦する'])
+        ]));
+      }
+      var top = st.top || [];
+      parts.push(h('div', { class: 'panel' }, [
+        h('h3', {}, ['ランキング TOP20']),
+        h('table', { class: 'rank-table' }, [
+          h('thead', {}, [h('tr', {}, [h('th', {}, ['#']), h('th', {}, ['識別コード']), h('th', {}, ['R']), h('th', {}, ['W-L'])])]),
+          h('tbody', {}, top.map(function (t, i) {
+            return h('tr', { class: (st.myEntry && t.codename === st.myEntry.codename) ? 'me' : '' }, [
+              h('td', {}, [String(i + 1)]), h('td', {}, [t.codename]), h('td', {}, [String(t.rating)]), h('td', {}, [t.wins + '-' + t.losses])
+            ]);
+          }))
+        ])
+      ]));
+      var hist = st.history || [];
+      if (hist.length) {
+        parts.push(h('div', { class: 'panel' }, [
+          h('h3', {}, ['対戦履歴']),
+          h('div', {}, hist.map(function (r) {
+            return h('div', { class: 'history-row' }, [
+              h('span', {}, ['vs ' + r.opponent]),
+              h('span', { class: r.result === 'win' ? 'win' : 'lose' }, [r.result === 'win' ? '勝利' : '敗北'])
+            ]);
+          }))
+        ]));
+      }
+      mount(arenaBody, parts);
+    },
+
+    renderCollection: function (st) {
+      st = st || {};
+      var parts = st.parts || {};
+      var credits = st.credits || 0;
+      var medals = st.medals || 0;
+      var dexBlocks = DEX_CATS
+        .map(function (c) {
+          var list = parts[c.partKey] || [];
+          return h('div', { class: 'panel' }, [
+            h('div', { class: 'dex-head' }, [
+              h('h3', { style: 'margin:0' }, [c.label]),
+              h('span', { class: 'pct' }, [list.length + '種'])
+            ]),
+            h('div', { class: 'dex-grid' }, list.map(function (p) {
+              var price = p.price || 0;
+              var afford = price <= credits;
+              return h('div', { class: 'dex-chip' + (afford ? '' : ' over-budget') }, [
+                h('div', { class: 'dex-name' }, [p.name, bandChip(p.band)]),
+                h('div', { class: 'dex-price' }, [price.toLocaleString() + ' C'])
+              ]);
+            }))
+          ]);
+        });
+      var cosmetics = st.cosmetics || [];
+      var cosmeticCards = cosmetics.map(function (c) {
+        return h('div', { class: 'cosmetic-card' }, [
+          h('div', { class: 'chip', style: 'background:' + (c.color || '#888') }),
+          h('div', { class: 'muted' }, [c.name]),
+          c.owned
+            ? h('span', { class: 'muted' }, ['所持'])
+            : h('button', { class: 'small', disabled: medals < (c.priceMedals || 0), onclick: function () { hooks.onBuyCosmetic && hooks.onBuyCosmetic(c.id); } }, ['🎖' + (c.priceMedals || 0) + ' で購入'])
+        ]);
+      });
+      mount(collectionBody, dexBlocks.concat([
+        h('div', { class: 'panel' }, [
+          h('h3', {}, ['コスメショップ']),
+          h('div', { class: 'cosmetic-grid' }, cosmeticCards.length ? cosmeticCards : [h('p', { class: 'muted' }, ['準備中'])])
+        ]),
+        h('div', { class: 'panel pass-card' }, [
+          h('span', { class: 'badge-soon' }, ['準備中']),
+          h('h3', {}, ['支援工廠パス']),
+          h('p', { class: 'p2w-note' }, ['塗装・エンブレム・勝利演出などのコスメを解放する予定です。性能に影響する販売は行いません。'])
+        ])
+      ]));
+    },
+
+    renderGraveyard: function (st) {
+      st = st || {};
+      var list = st.list || [];
+      if (!list.length) {
+        mount(graveyardBody, [h('p', { class: 'muted', style: 'text-align:center;padding:30px 4px' }, ['まだ誰も眠っていない'])]);
+        return;
+      }
+      mount(graveyardBody, list.map(function (p) {
+        return h('div', { class: 'panel grave-stone' }, [
+          h('div', { class: 'grave-name' }, [p.name || 'PILOT']),
+          h('div', { class: 'grave-line' }, ['Lv' + (p.level || 1) + ' ・ 名誉 ' + (p.honor || 0)]),
+          h('div', { class: 'grave-line' }, ['出撃 ' + (p.sorties || 0) + ' ・ 勝利 ' + (p.wins || 0)]),
+          h('div', { class: 'grave-kia' }, [fmtKiaDate(p.kia)])
+        ]);
+      }));
+    },
+
+    setUser: function (userOrNull) {
+      state.user = userOrNull || null;
+      renderLoginArea();
+    },
+
+    toast: function (msg) {
+      var t = h('div', { class: 'toast' }, [String(msg)]);
+      toastHost.appendChild(t);
+      requestAnimationFrame(function () { t.classList.add('show'); });
+      setTimeout(function () {
+        t.classList.remove('show');
+        setTimeout(function () { t.remove(); }, 300);
+      }, 2600);
+    },
+
+    battleEls: function () { return battleElsCache; },
+
+    showResult: function (r) {
+      r = r || {};
+      var cls = r.myWin === true ? 'win' : (r.myWin === false ? 'lose' : 'draw');
+      var unlocks = (r.unlocked || []).map(function (name) { return h('span', { class: 'unlock-chip' }, ['NEW: ' + name]); });
+      var lines = (r.statLines || []).map(function (s) { return h('div', {}, [s]); });
+      var shareBtn = shareBtnEl(r.shareData, '📤 結果をシェア');
+      var retryBtn = h('button', { class: 'primary' }, [r.retryLabel || 'もう一度']);
+      retryBtn.addEventListener('click', function () { r.onRetry && r.onRetry(); });
+      var titleBtn = h('button', {}, ['タイトルへ']);
+      titleBtn.addEventListener('click', function () { r.onTitle && r.onTitle(); });
+
+      mount(resultInner, [
+        h('div', { class: 'result-headline ' + cls }, [r.winTxt || '']),
+        h('div', { id: 'result-time' }, [fmtDuration(r.duration)]),
+        h('div', { class: 'result-credits' }, ['獲得クレジット +' + (r.credits || 0) + ' C']),
+        unlocks.length ? h('div', { class: 'unlock-list' }, unlocks) : null,
+        lines.length ? h('div', { class: 'stat-lines' }, lines) : null,
+        shareBtn,
+        replayBtnEl(r.replayUrl),
+        h('div', { class: 'result-actions' }, [retryBtn, titleBtn])
+      ]);
+      ui.showScreen('result');
+    },
+
+    /* ---- 戦果ボックス(Ver5後半): 通常プレイでは #result 画面へ遷移せず、CONTROL の下にその場で戦果を出す。
+       ステージ(3D/レーダー/実況)は止めない。呼ばれるたびに中身を作り直す。opts は showResult と同形。 ---- */
+    showAftermath: function (opts) {
+      opts = opts || {};
+      var cls = aftermathCls(opts.winTxt);
+      var lines = (opts.statLines || []).map(function (s) { return h('div', {}, [s]); });
+      var shareBtn = shareBtnEl(opts.shareData, '📤 シェア');
+      var retryBtn = h('button', { class: 'primary' }, [opts.retryLabel || '出撃選択へ']);
+      retryBtn.addEventListener('click', function () { opts.onRetry && opts.onRetry(); });
+      var titleBtn = h('button', {}, ['タイトルへ']);
+      titleBtn.addEventListener('click', function () { opts.onTitle && opts.onTitle(); });
+
+      mount(aftermathBox, [
+        h('div', { class: 'aftermath-headline ' + cls }, [opts.winTxt || '']),
+        h('div', { class: 'aftermath-meta' }, [fmtDuration(opts.duration), ' ・ +' + (opts.credits || 0) + ' C']),
+        lines.length ? h('div', { class: 'stat-lines' }, lines) : null,
+        h('div', { class: 'aftermath-actions' }, [shareBtn, replayBtnEl(opts.replayUrl), retryBtn, titleBtn])
+      ]);
+      aftermathBox.hidden = false;
+    },
+
+    hideAftermath: function () {
+      aftermathBox.hidden = true;
+      clear(aftermathBox);
+    }
+  };
+
+  ui.showScreen('title');
+  return ui;
+}

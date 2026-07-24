@@ -1,0 +1,16 @@
+{
+  "name": "fable-kouki",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "schema:local": "wrangler d1 execute fable-kouki --local --file=schema.sql",
+    "schema:remote": "wrangler d1 execute fable-kouki --remote --file=schema.sql",
+    "test": "node test-local.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0",
+    "miniflare": "^3.0.0"
+  }
+}

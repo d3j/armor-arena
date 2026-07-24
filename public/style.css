@@ -1,0 +1,503 @@
+/* =====================================================================
+   鋼機工廠(kouki) — レトロ軍用ターミナル × ハンガー
+   ===================================================================== */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+:root {
+  --bg-deep: #05070a;
+  --bg-panel: #10161d;
+  --bg-panel-2: #161d26;
+  --bg-inset: #080b0f;
+  --border: #3a4a56;
+  --border-dim: #232e37;
+  --amber: #ffb020;
+  --amber-dim: #7a5a1e;
+  --green: #57e6a1;
+  --green-dim: #2e6b4d;
+  --red: #ff5d5d;
+  --ink: #dfe8ec;
+  --sub: #7c8a94;
+  --sub-dim: #4c5761;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Courier New", monospace;
+  --font-jp: "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+}
+
+html, body {
+  margin: 0; padding: 0; min-height: 100%; width: 100%;
+  background: var(--bg-deep); color: var(--ink);
+  font-family: var(--font-mono), var(--font-jp);
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: none;
+}
+
+body {
+  position: relative;
+  background-image:
+    radial-gradient(ellipse at 50% -10%, rgba(87, 230, 161, 0.06), transparent 55%),
+    radial-gradient(ellipse at 50% 110%, rgba(255, 176, 32, 0.05), transparent 55%);
+}
+
+/* 走査線+ビネット(固定オーバーレイ) */
+.scanlines {
+  position: fixed; inset: 0; z-index: 60; pointer-events: none;
+  background-image: repeating-linear-gradient(
+      to bottom, rgba(255,255,255,.028) 0px, rgba(255,255,255,.028) 1px,
+      transparent 2px, transparent 4px
+    ),
+    radial-gradient(ellipse at 50% 50%, transparent 55%, rgba(0,0,0,.55) 100%);
+  mix-blend-mode: overlay;
+  opacity: .8;
+}
+
+#app { position: relative; min-height: 100%; }
+
+/* ---- 画面(スクリーン)切替 ---- */
+.screen {
+  display: flex; flex-direction: column; gap: 14px;
+  max-width: 520px; margin: 0 auto;
+  padding: calc(var(--safe-t) + 16px) 14px calc(var(--safe-b) + 26px);
+  min-height: 100vh;
+  opacity: 0; transition: opacity .28s ease;
+}
+.screen.active { opacity: 1; }
+.screen.wide { max-width: 960px; }
+
+/* ---- 見出し(ステンシル風) ---- */
+.stencil {
+  font-weight: 800; letter-spacing: .18em;
+  font-family: var(--font-mono);
+  text-shadow: 0 0 12px rgba(255,176,32,.25);
+}
+h1, h2, h3 { margin: 0; color: var(--ink); }
+h2.screen-title {
+  font-size: 15px; color: var(--amber); letter-spacing: .22em;
+  border-bottom: 1px solid var(--border-dim); padding-bottom: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+h2.screen-title .n { color: var(--sub); font-size: 11px; letter-spacing: .1em; }
+
+/* ---- パネル(角丸なし・面取り・リベット) ---- */
+.panel {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  padding: 14px;
+  position: relative;
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  background-image:
+    radial-gradient(circle 2.4px at 8px 8px, #9aa7b0 60%, transparent 62%),
+    radial-gradient(circle 2.4px at calc(100% - 8px) 8px, #9aa7b0 60%, transparent 62%),
+    radial-gradient(circle 2.4px at 8px calc(100% - 8px), #9aa7b0 60%, transparent 62%),
+    radial-gradient(circle 2.4px at calc(100% - 8px) calc(100% - 8px), #9aa7b0 60%, transparent 62%);
+}
+.panel > h3 {
+  font-size: 12px; color: var(--sub); letter-spacing: .18em; margin: 0 0 10px;
+}
+
+/* ---- ボタン ---- */
+button {
+  font-family: inherit; color: var(--ink);
+  background: var(--bg-panel-2); border: 1px solid var(--border);
+  padding: 11px 14px; font-size: 13.5px; letter-spacing: .06em;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+  transition: transform .12s ease, border-color .2s ease, background .2s ease;
+  min-height: 44px;
+}
+button:hover { border-color: var(--amber); }
+button:active { transform: scale(.96); }
+button:disabled { opacity: .38; cursor: not-allowed; }
+button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+button.primary {
+  background: linear-gradient(180deg, #2c5a44, #1c3d30); border-color: var(--green);
+  color: #d8fff0; font-weight: 700;
+}
+button.primary:hover { box-shadow: 0 0 14px rgba(87,230,161,.35); }
+button.ghost { background: transparent; }
+button.small { padding: 7px 10px; font-size: 12px; min-height: 32px; }
+button.danger { border-color: var(--red); }
+
+a.link {
+  color: var(--sub); text-decoration: none; font-size: 12.5px; letter-spacing: .05em;
+  opacity: .8;
+}
+a.link:hover { color: var(--amber); opacity: 1; }
+
+/* ---- タイトル画面 ---- */
+.title-wrap { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 26px; }
+.logo { text-align: center; }
+.logo .main {
+  font-size: 42px; letter-spacing: .22em; font-weight: 800; color: var(--amber);
+  text-shadow: 0 0 22px rgba(255,176,32,.35); text-indent: .22em;
+}
+.logo .sub {
+  margin-top: 6px; color: var(--sub); font-size: 11px; letter-spacing: .4em;
+}
+.title-desc {
+  text-align: center; color: var(--sub); font-size: 12px; line-height: 1.9;
+  font-family: var(--font-jp); letter-spacing: .02em; padding: 0 6px;
+}
+.menu { display: flex; flex-direction: column; gap: 10px; }
+.menu button { padding: 15px; font-size: 14.5px; }
+.user-area {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  font-size: 12.5px; color: var(--sub);
+}
+.credits-line {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  color: var(--green); font-size: 13px; letter-spacing: .08em;
+}
+.credits-line .medals-amount { color: var(--amber); }
+.title-footer { text-align: center; display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }
+
+/* ---- パイロットロースター(タイトル。Ver5: 3人ロスター) ---- */
+.pilot-panel { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.pilot-roster { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.pilot-slot {
+  background: var(--bg-panel); border: 1px solid var(--border-dim);
+  padding: 9px 12px; display: flex; flex-direction: column; gap: 5px;
+  cursor: pointer;
+}
+.pilot-slot.active { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber); }
+.pilot-slot-row1 { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pilot-active-mark { color: var(--amber); font-size: 12px; }
+.pilot-name { color: var(--ink); font-weight: 700; font-size: 13px; }
+.pilot-level { color: var(--amber); font-size: 12px; }
+.pilot-slot-row2 { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pilot-honor { color: var(--sub); font-size: 11px; letter-spacing: .04em; }
+.pilot-status { font-size: 11.5px; letter-spacing: .04em; }
+.pilot-status.ok { color: var(--green); }
+.pilot-status.injury { color: var(--amber); }
+.pilot-slot-row3 { display: flex; justify-content: flex-end; }
+.pilot-fire-btn { padding: 4px 9px; min-height: 26px; font-size: 10.5px; }
+.pilot-slot.empty {
+  align-items: center; justify-content: center; cursor: default; gap: 8px;
+  border-style: dashed;
+}
+.pilot-slot-empty-label { color: var(--sub-dim); font-size: 11.5px; letter-spacing: .1em; }
+.pilot-slot-register { display: flex; gap: 6px; width: 100%; }
+.pilot-slot-register .pilot-name-input { flex: 1 1 auto; min-width: 0; }
+.pilot-slot-register button { flex: 0 0 auto; padding: 7px 10px; min-height: 32px; font-size: 12px; }
+.pilot-name-input { padding: 6px 8px; font-size: 12.5px; }
+.grave-link { align-self: center; }
+
+/* ---- ゲージ ---- */
+.gauge-row { display: flex; flex-direction: column; gap: 3px; margin-bottom: 9px; }
+.gauge-row .lbl {
+  display: flex; justify-content: space-between; font-size: 11px; color: var(--sub);
+  letter-spacing: .04em;
+}
+.gauge-row .lbl b { color: var(--ink); font-weight: 600; }
+.gauge {
+  height: 9px; background: var(--bg-inset); border: 1px solid var(--border-dim);
+  position: relative; overflow: hidden;
+}
+.gauge::after {
+  content: ''; position: absolute; inset: 0;
+  background: repeating-linear-gradient(to right, transparent 0, transparent 9%, rgba(0,0,0,.35) 9%, rgba(0,0,0,.35) 10%);
+  pointer-events: none;
+}
+.gauge > i { display: block; height: 100%; background: var(--green); transition: width .25s ease; }
+.gauge.warn > i { background: var(--amber); }
+.gauge.danger > i { background: var(--red); }
+.grade-badge {
+  display: inline-block; margin-top: 4px; font-size: 22px; font-weight: 800; color: var(--amber);
+  letter-spacing: .1em;
+}
+
+/* ---- タブ ---- */
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; padding-bottom: 2px; }  /* 7タブ目が隠れないよう折返し */
+.tabs button {
+  flex: 0 0 auto; padding: 9px 12px; font-size: 12.5px; background: var(--bg-inset);
+  border-color: var(--border-dim); color: var(--sub);
+}
+.tabs button.active { color: var(--amber); border-color: var(--amber); background: var(--bg-panel-2); }
+
+/* ---- パーツカード ---- */
+.card-list { display: flex; flex-direction: column; gap: 8px; }
+.part-card {
+  display: flex; flex-direction: column; gap: 4px; text-align: left;
+  background: var(--bg-inset); padding: 10px 12px;
+}
+.part-card .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.part-card .name-wrap { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.part-card .name { font-size: 13.5px; color: var(--ink); font-weight: 700; letter-spacing: .03em; }
+.part-card .weight { font-size: 11px; color: var(--sub); white-space: nowrap; }
+.part-card .desc {
+  font-size: 11px; color: var(--sub); font-family: var(--font-jp); line-height: 1.5;
+}
+.part-card .stats { font-size: 10.5px; color: var(--green); letter-spacing: .02em; }
+.part-card.selected { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber); }
+.part-card .price-line { font-size: 11px; color: var(--sub); letter-spacing: .04em; }
+.part-card .price-line.over { color: var(--red); }
+
+/* ---- 武器の交戦帯域チップ(Ver4: 白兵/短距離/中距離/遠距離。彩度低めでCRT意匠に馴染ませる) ---- */
+.band-chip {
+  display: inline-block; flex: 0 0 auto; font-size: .6rem; letter-spacing: .02em;
+  padding: 1px 6px; line-height: 1.5; border: 1px solid; white-space: nowrap;
+}
+.band-chip.band-melee { border-color: #7a4444; color: #d99a9a; background: rgba(217, 93, 93, .08); }
+.band-chip.band-short { border-color: #8a6430; color: #dba868; background: rgba(255, 176, 32, .08); }
+.band-chip.band-mid   { border-color: #3d6b4c; color: #8fd9ac; background: rgba(87, 230, 161, .08); }
+.band-chip.band-long  { border-color: #3f5b70; color: #8fb3d9; background: rgba(143, 179, 199, .08); }
+
+/* ---- 機体総額/予算バー(工廠) ---- */
+.gauge-row.cost-row .lbl b { color: var(--amber); }
+.gauge-row.cost-row.over .lbl b { color: var(--red); }
+
+/* ---- カラーピッカー ---- */
+.color-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.swatch {
+  width: 34px; height: 34px; min-height: 34px; padding: 0; border: 2px solid var(--border);
+}
+.swatch.selected { border-color: var(--amber); box-shadow: 0 0 0 2px rgba(255,176,32,.35); }
+input[type="text"] {
+  font-family: inherit; background: var(--bg-inset); color: var(--ink);
+  border: 1px solid var(--border); padding: 10px 12px; font-size: 13px; width: 100%;
+}
+input[type="text"]:focus-visible { outline: 2px solid var(--amber); }
+.field-note { font-size: 10.5px; color: var(--sub-dim); font-family: var(--font-jp); margin-top: 4px; }
+
+/* ---- スロット ---- */
+.slot-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.slot-card {
+  background: var(--bg-inset); border: 1px solid var(--border-dim); padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.slot-card .row1 { display: flex; justify-content: space-between; font-size: 11px; color: var(--sub); }
+.slot-card .name { font-size: 12.5px; color: var(--ink); min-height: 1.4em; }
+.slot-card .btns { display: flex; gap: 6px; }
+.slot-card .btns button { flex: 1; }
+
+/* ---- 演習(sortie) ---- */
+.rank-block { display: flex; flex-direction: column; gap: 8px; }
+.rank-head { display: flex; align-items: center; gap: 8px; }
+.rank-head .badge {
+  width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+  background: var(--bg-inset); border: 1px solid var(--amber); color: var(--amber); font-weight: 800;
+}
+.fight-row { display: flex; gap: 8px; }
+.fight-row button { flex: 1; display: flex; flex-direction: column; gap: 2px; padding: 10px 6px; font-size: 12px; }
+.fight-row button .rw { display: flex; justify-content: space-between; width: 100%; font-size: 10.5px; color: var(--sub); }
+.fight-row button.cleared { border-color: var(--green); }
+.fight-row button.cleared .rw::before { content: '✓ '; color: var(--green); }
+.daily-card { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.field-panel { display: flex; flex-direction: column; gap: 8px; }
+.field-chip-wrap { position: relative; }
+.field-chip-row {
+  display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.field-chip-row::-webkit-scrollbar { display: none; }
+.field-chip-row .chip-btn { flex: 0 0 auto; white-space: nowrap; }
+/* モバイル: 右端フェード+「»」インジケータ(末尾到達で消える) */
+.field-chip-fade {
+  position: absolute; top: 0; right: 0; bottom: 2px; width: 34px;
+  display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 2px; color: var(--amber); font-size: 15px; line-height: 1;
+  background: linear-gradient(to right, transparent, var(--bg-panel) 70%);
+  pointer-events: none; transition: opacity .2s ease;
+}
+.field-chip-wrap.at-end .field-chip-fade { opacity: 0; }
+.field-desc { min-height: 1.6em; margin: 0; font-size: 11px; font-family: var(--font-jp); color: var(--sub); line-height: 1.5; }
+.sortie-world-note { margin: -4px 0 0; font-size: 10.5px; font-family: var(--font-jp); opacity: .85; }
+@media (min-width: 720px) {
+  .field-chip-row { flex-wrap: wrap; overflow-x: visible; }
+  .field-chip-fade { display: none; }
+}
+
+/* ---- 闘技場(arena) ---- */
+.stat-line { display: flex; justify-content: space-between; font-size: 12.5px; padding: 4px 0; border-bottom: 1px dashed var(--border-dim); }
+.stat-line b { color: var(--amber); }
+table.rank-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+table.rank-table th, table.rank-table td {
+  padding: 6px 4px; text-align: left; border-bottom: 1px solid var(--border-dim); color: var(--ink);
+}
+table.rank-table th { color: var(--sub); font-weight: 600; letter-spacing: .04em; }
+table.rank-table tr.me { background: rgba(255,176,32,.08); }
+.history-row { display: flex; justify-content: space-between; font-size: 11.5px; padding: 5px 0; border-bottom: 1px dashed var(--border-dim); }
+.history-row .win { color: var(--green); } .history-row .lose { color: var(--red); }
+.arena-login { text-align: center; display: flex; flex-direction: column; gap: 14px; padding: 20px 4px; }
+.arena-login p { color: var(--sub); font-size: 12.5px; line-height: 1.8; font-family: var(--font-jp); }
+
+/* ---- 墓場(grave) ---- */
+.grave-stone { display: flex; flex-direction: column; gap: 4px; }
+.grave-name { color: var(--ink); font-weight: 700; font-size: 14px; letter-spacing: .04em; }
+.grave-line { color: var(--sub); font-size: 11.5px; }
+.grave-kia { color: var(--sub-dim); font-size: 10.5px; margin-top: 2px; }
+
+/* ---- コレクション ---- */
+.dex-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.dex-head .pct { color: var(--amber); font-size: 12px; }
+.dex-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.dex-chip {
+  background: var(--bg-inset); border: 1px solid var(--border-dim); padding: 8px 6px;
+  font-size: 10.5px; text-align: center; color: var(--ink); line-height: 1.4;
+}
+.dex-chip .dex-name { color: var(--ink); }
+.dex-chip .dex-name .band-chip { margin-left: 4px; vertical-align: middle; }
+.dex-chip .dex-price { color: var(--green); margin-top: 2px; }
+.dex-chip.over-budget .dex-price { color: rgba(255, 93, 93, .72); }
+.cosmetic-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.cosmetic-card { background: var(--bg-inset); padding: 10px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.cosmetic-card .chip { width: 30px; height: 30px; border: 1px solid var(--border); }
+.pass-card { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.badge-soon {
+  display: inline-block; font-size: 10px; letter-spacing: .1em; color: var(--amber);
+  border: 1px solid var(--amber-dim); padding: 3px 8px;
+}
+.p2w-note { font-size: 11px; color: var(--sub); font-family: var(--font-jp); line-height: 1.7; }
+
+/* ---- バトル画面 ---- */
+.battle-tabs { display: flex; gap: 4px; }
+.battle-tabs button { flex: 1; }
+.battle-stage {
+  position: relative; width: 100%; aspect-ratio: 4 / 3; background: var(--bg-inset);
+  border: 1px solid var(--border); overflow: hidden;
+}
+.battle-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* ---- 実況ログ(多視点) ---- */
+.chip-btn {
+  background: var(--bg-inset); border: 1px solid var(--border-dim); color: var(--sub);
+  padding: 7px 11px; font-size: 11.5px; min-height: 30px;
+}
+.chip-btn.active { color: var(--amber); border-color: var(--amber); background: var(--bg-panel-2); }
+
+.battle-stage .log-wrap {
+  position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg-inset);
+}
+.log-filter {
+  display: flex; gap: 4px; flex-wrap: wrap; flex: 0 0 auto;
+  padding: 6px 8px; border-bottom: 1px solid var(--border-dim); background: var(--bg-panel);
+}
+.logview {
+  flex: 1 1 auto; margin: 0; padding: 10px; overflow-y: auto;
+  font-size: 11.5px; line-height: 1.7; background: var(--bg-inset);
+  word-break: break-word; user-select: text; -webkit-user-select: text;
+}
+.logview .line { display: flex; gap: 7px; align-items: baseline; padding: 3px 0; }
+.logview .line .chip {
+  flex: 0 0 auto; font-size: 9.5px; letter-spacing: .05em; line-height: 1.4;
+  padding: 1px 6px; border: 1px solid currentColor; background: transparent; white-space: nowrap;
+}
+.logview .line .chip.sys {
+  font-family: var(--font-mono); font-size: 8.5px; padding: 1px 4px; opacity: .75;
+}
+.logview .line .txt { color: var(--ink); font-family: var(--font-jp); }
+.logview .line .txt.sys { font-family: var(--font-mono); color: var(--sub); font-size: 10.5px; letter-spacing: .01em; }
+
+/* data-filter は CSS のみで表示制御(行の追加/削除は game.js の責務) */
+/* Ver5: 実況席(ana/kai)+無線(pilotA/pilotB)を「音声」に統合 */
+.logview[data-filter="voice"] .line:not(.role-ana):not(.role-kai):not(.role-pilotA):not(.role-pilotB) { display: none; }
+.logview[data-filter="sys"] .line:not(.role-sys) { display: none; }
+
+/* ---- ログフィルタ行の右端: 読み上げトグル ---- */
+.log-filter-spacer { flex: 1 1 auto; min-width: 4px; }
+.tts-btn { flex: 0 0 auto; padding: 6px 10px; min-height: 30px; font-size: 11px; }
+.hud { display: flex; flex-direction: column; gap: 8px; }
+.hud .mech-hp { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.hud .mech-hp .lbl { display: flex; justify-content: space-between; font-size: 11px; color: var(--sub); }
+.hud .ammo { font-family: var(--font-mono); font-size: 10px; letter-spacing: .01em; color: var(--sub); }
+.hud-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px 10px; flex-wrap: wrap; }
+.hud-bottom .time { font-size: 15px; color: var(--amber); letter-spacing: .05em; }
+.hud-bottom .ctl { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.hud-bottom .ctl button { flex: 0 0 auto; }
+
+/* ---- battle右ペイン: TGT-A/TGT-B/CONTROL の3ボックス ---- */
+.tgt-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tgt-box { padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.tgt-box .tgt-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
+.tgt-tag { font-size: 12px; color: var(--amber); letter-spacing: .1em; font-weight: 700; white-space: nowrap; }
+.tgt-sub { font-size: 10px; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.wpn-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--ink); }
+.wpn-row .wpn-ico { color: var(--sub); flex: 0 0 auto; }
+.wpn-row .wpn-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- 部位ダメージチップ(腕R/腕L/脚/炉。data-lv=0〜3を game.js が更新) ---- */
+.pd-row { display: flex; gap: 3px; margin: 1px 0 2px; }
+.pd-chip {
+  flex: 1 1 0; min-width: 0; text-align: center; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: .62rem; letter-spacing: 0; line-height: 1.5;
+  padding: 1px 2px; border: 1px solid var(--border-dim); color: var(--sub-dim);
+  background: var(--bg-inset);
+}
+.pd-chip[data-lv="1"] { border-color: #a3902f; color: #e8d24d; }
+.pd-chip[data-lv="2"] { border-color: #c9791f; color: var(--amber); background: rgba(255, 176, 32, .1); }
+.pd-chip[data-lv="3"] {
+  border-color: var(--red); color: #ff8f8f; background: rgba(255, 93, 93, .18);
+  box-shadow: 0 0 5px rgba(255, 93, 93, .6); font-weight: 700;
+}
+.stance-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; }
+.stance-lbl { color: var(--sub); }
+.stance-badge {
+  color: var(--green); border: 1px solid var(--green-dim); padding: 1px 7px; font-size: 10px; letter-spacing: .04em;
+}
+.control-box .hud-bottom { gap: 8px; }
+.control-box .tgt-head { margin-bottom: 6px; }
+
+/* ---- 戦果ボックス(Ver5後半: 勝敗の余韻。CONTROL 直下・右ペイン内。画面遷移せずここに出す) ---- */
+.aftermath-box { gap: 8px; }
+.aftermath-headline { text-align: center; font-size: 22px; font-weight: 800; letter-spacing: .1em; }
+.aftermath-headline.win { color: var(--green); text-shadow: 0 0 14px rgba(87,230,161,.35); }
+.aftermath-headline.lose { color: var(--red); text-shadow: 0 0 14px rgba(255,93,93,.35); }
+.aftermath-headline.draw { color: var(--sub); }
+.aftermath-headline.surrender { color: var(--amber); text-shadow: 0 0 14px rgba(255,176,32,.3); }
+.aftermath-meta { text-align: center; font-size: 12.5px; color: var(--green); letter-spacing: .03em; }
+.aftermath-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.aftermath-actions button { flex: 1 1 84px; }
+
+/* ---- 結果画面 ---- */
+#result-inner { text-align: center; display: flex; flex-direction: column; gap: 14px; padding: 10px 6px; }
+.result-headline { font-size: 40px; font-weight: 800; letter-spacing: .12em; }
+.result-headline.win { color: var(--green); text-shadow: 0 0 20px rgba(87,230,161,.4); }
+.result-headline.lose { color: var(--red); text-shadow: 0 0 20px rgba(255,93,93,.4); }
+.result-headline.draw { color: var(--amber); }
+#result-time { font-size: 20px; color: var(--ink); letter-spacing: .05em; }
+.result-credits { color: var(--green); font-size: 14px; }
+.unlock-list { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.unlock-chip { font-size: 10.5px; color: var(--amber); border: 1px solid var(--amber-dim); padding: 3px 8px; }
+.stat-lines { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--sub); }
+.result-actions { display: flex; gap: 8px; }
+.result-actions button { flex: 1; }
+
+/* ---- トースト ---- */
+.toast-host { position: fixed; left: 50%; bottom: calc(20px + var(--safe-b)); transform: translateX(-50%); z-index: 90; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+.toast {
+  background: rgba(16,22,29,.95); border: 1px solid var(--amber); color: var(--ink);
+  padding: 10px 16px; font-size: 12.5px; max-width: 86vw; text-align: center;
+  opacity: 0; transform: translateY(10px); transition: opacity .25s ease, transform .25s ease;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+
+/* ---- レイアウト補助 ---- */
+.row { display: flex; gap: 8px; }
+.row.between { justify-content: space-between; align-items: center; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.muted { color: var(--sub); font-size: 11.5px; }
+
+/* バトルはモバイル縦積み(ステージ主役)・widescreenで横並び */
+.battle-layout { flex-direction: column; }
+.battle-stage { aspect-ratio: auto; height: min(58vh, 520px); }
+@media (min-width: 720px) {
+  .battle-layout { flex-direction: row; }
+  .battle-stage { flex: 1; height: min(64vh, 620px); }
+  .hud { flex: 0 0 300px; }
+}
+/* 縦420px前後の低height機でも3ボックスが破綻しないよう余白を詰める */
+@media (max-height: 480px) {
+  .tgt-box { padding: 7px; gap: 4px; }
+  .hud .mech-hp { gap: 2px; margin-bottom: 3px; }
+}
+
+.fight-row button.locked { opacity: .38; cursor: not-allowed; }
+.fight-row button span:first-child { font-size: 11px; display: block; }
+
+/* 工廠の機体プレビュー */
+.mech-preview { width: 100%; height: 170px; display: block; background: #0a1018; border: 1px solid var(--border-dim, #223); margin-bottom: 10px; }
+
+/* Ver6: 戦果ボックスのボタンを1行に収める(親パッチ) */
+.aftermath-box .aftermath-actions button,
+.aftermath-box button { font-size: 12px; padding: 9px 8px; white-space: nowrap; }

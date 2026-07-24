@@ -1,0 +1,27 @@
+# =====================================================================
+# workers/kouki/wrangler.toml — 『鋼機工廠』バックエンド設定(workers/_template から派生)
+# 資源作成(制作セッションで一度だけ。得た id を下に書く):
+#   npx wrangler d1 create fable-kouki
+#   npx wrangler kv namespace create fable-kouki-kv
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET
+# =====================================================================
+name = "fable-kouki"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+[vars]
+# 本番 Pages オリジン + ローカル検証オリジンを許可
+ALLOWED_ORIGINS = "https://d3j.github.io,http://localhost:8742"
+# kodama と同じ Google OAuth クライアント(fable-playground 共通の1アプリを流用)
+GOOGLE_CLIENT_ID = "624738288651-i32dpl2bs0pg14br6pgdrpc89gqh9619.apps.googleusercontent.com"
+# GOOGLE_CLIENT_SECRET は secret(`wrangler secret put GOOGLE_CLIENT_SECRET`)。ここには書かない。
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fable-kouki"
+database_id = "07a40a0f-6389-46a9-8f9c-afbe451ba3f3"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "5223db2d540a409bb396c8710fba6ef2"
