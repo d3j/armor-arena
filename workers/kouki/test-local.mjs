@@ -1,7 +1,7 @@
 // 『鋼機工廠』(kouki) worker のインメモリ検証(Miniflare dispatchFetch)。
 // 実行: node test-local.mjs   (※ workerd がポートを listen するため sandbox 無効が要る)
 //
-// 注意(親/後任へ): このファイルは public/kouki/sim.js と public/kouki/parts.js の完成前は
+// 注意(親/後任へ): このファイルは public/sim.js と public/parts.js の完成前は
 // 実行できない(src/index.js がそれらを import するため Miniflare のバンドルで解決できずエラーになる)。
 // 両ファイルが揃ってから `npm i && node test-local.mjs` で実行すること。
 import { Miniflare } from 'miniflare';

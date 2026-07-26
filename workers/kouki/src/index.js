@@ -20,8 +20,8 @@
    バインディング: DB(D1) / KV(KV)
    ===================================================================== */
 
-import { simulate, validateBuild, FIELDS } from '../../../public/kouki/sim.js';
-import { codename, sanitizeBuild } from '../../../public/kouki/parts.js';
+import { simulate, validateBuild, FIELDS } from '../../../public/sim.js';
+import { codename, sanitizeBuild } from '../../../public/parts.js';
 
 const SESSION_TTL = 60 * 60 * 24 * 30;   // 30日
 const STATE_TTL = 60 * 10;               // OAuth state は10分

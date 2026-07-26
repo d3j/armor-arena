@@ -37,7 +37,7 @@ npx wrangler deploy
 ```
 
 デプロイで得た公開URL(`https://fable-kouki.<sub>.workers.dev`)を、フロント
-`public/kouki/` の `FableData.create({ base })` に渡す。
+`public/` の `FableData.create({ base })` に渡す。
 
 ## ローカル検証(アカウント不要)
 ```sh
@@ -47,9 +47,9 @@ node test-local.mjs             # Miniflare によるインメモリ検証(下�
 ```
 
 ## 注意(親/後任が統合時にやること)
-1. **`public/kouki/parts.js` と `sim.js` の完成待ち**: `src/index.js` はこの2ファイルを
-   `import { simulate, validateBuild } from '../../../public/kouki/sim.js'` /
-   `import { codename } from '../../../public/kouki/parts.js'` として参照する(未完成の間は
+1. **`public/parts.js` と `sim.js` の完成待ち**: `src/index.js` はこの2ファイルを
+   `import { simulate, validateBuild } from '../../../public/sim.js'` /
+   `import { codename } from '../../../public/parts.js'` として参照する(未完成の間は
    `wrangler dev` / `node test-local.mjs` ともにモジュール解決エラーで起動できない)。
 2. **bot機体のパーツid整合確認**: `schema.sql` 末尾の bot 3体(`bot:alpha/beta/gamma`)の
    `build_json` は暫定値(`fr2/lg1/gn2/ar2/wp1/wp2/ai1`)。`parts.js` 確定後、実在するパーツidに

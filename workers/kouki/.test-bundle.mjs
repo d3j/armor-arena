@@ -1,52 +1,70 @@
-// ../../public/kouki/parts.js
+// ../../public/parts.js
 var PARTS = {
   frame: [
+    // 並びは価格順(表示用)。id は追記専用(リプレイ互換の掟1)— 番号は歴史順で欠番も再利用しない。
+    { id: "fr7", name: "\u30B9\u30B9\u30AD\u8584\u6BBB", desc: "\u7D19\u4E00\u679A\u306E\u8EFD\u3055\u3002\u5F53\u3066\u3055\u305B\u306A\u3044\u8005\u306E\u6BBB\u3002", hp: 530, capacity: 720, weight: 95, price: 300, tier: 0 },
     { id: "fr1", name: "\u30CF\u30E4\u30C6\u8EFD\u88C5\u6BBB", desc: "\u8EFD\u304F\u3001\u8584\u3044\u3002\u901F\u3055\u3067\u751F\u304D\u308B\u8005\u306E\u6BBB\u3002", hp: 550, capacity: 800, weight: 120, price: 400, tier: 0 },
     { id: "fr2", name: "\u30C4\u30EB\u30AE\u4E2D\u88C5\u6BBB", desc: "\u653B\u5B88\u306E\u5747\u8861\u3002\u5DE5\u5EE0\u306E\u57FA\u6E96\u6A5F\u3002", hp: 640, capacity: 1e3, weight: 180, price: 600, tier: 0 },
-    { id: "fr3", name: "\u30E8\u30ED\u30A4\u91CD\u88C5\u6BBB", desc: "\u920D\u3044\u304C\u6C88\u307E\u306A\u3044\u3002\u58C1\u306B\u306A\u308B\u6BBB\u3002", hp: 920, capacity: 1280, weight: 260, price: 1400, tier: 1 },
+    { id: "fr6", name: "\u30AF\u30ED\u30AC\u30CD\u539A\u6BBB", desc: "\u5B89\u3044\u9244\u3092\u539A\u304F\u91CD\u306D\u305F\u3002\u5024\u6BB5\u306E\u5206\u306F\u6B62\u3081\u308B\u3002", hp: 750, capacity: 1150, weight: 250, price: 750, tier: 0 },
     { id: "fr4", name: "\u30AB\u30B2\u30ED\u30A6\u8972\u6483\u6BBB", desc: "\u9AA8\u3092\u524A\u3063\u3066\u7A4D\u8F09\u3092\u6B8B\u3057\u305F\u5947\u8972\u4ED5\u69D8\u3002", hp: 560, capacity: 900, weight: 130, price: 1100, tier: 1 },
+    { id: "fr3", name: "\u30E8\u30ED\u30A4\u91CD\u88C5\u6BBB", desc: "\u920D\u3044\u304C\u6C88\u307E\u306A\u3044\u3002\u58C1\u306B\u306A\u308B\u6BBB\u3002", hp: 920, capacity: 1280, weight: 260, price: 1400, tier: 1 },
     { id: "fr5", name: "\u30BF\u30A4\u30B7\u30E3\u30AF\u65D7\u7532\u6BBB", desc: "\u65D7\u6A5F\u306E\u305F\u3081\u306E\u904E\u5270\u306A\u4F53\u8EAF\u3002", hp: 980, capacity: 1550, weight: 340, price: 3200, tier: 2 }
   ],
   legs: [
     // speed は m/s(全高4.2m級のローラーダッシュ相当。最高約150km/h)
     { id: "lg1", name: "\u4E8C\u811A\u30FB\u75BE\u98A8", desc: "\u6A19\u6E96\u4E8C\u811A\u306E\u5FEB\u901F\u578B\u3002", kind: "biped", speed: 31, turn: 2.6, evasion: 0.32, drain: 3, aimBonus: 0, weight: 140, price: 350, tier: 0 },
     { id: "lg2", name: "\u4E8C\u811A\u30FB\u5805\u7262", desc: "\u91CD\u91CF\u306B\u8010\u3048\u308B\u6226\u5217\u4E8C\u811A\u3002", kind: "biped", speed: 24, turn: 2.2, evasion: 0.22, drain: 2.5, aimBonus: 0.02, weight: 190, price: 380, tier: 0 },
+    { id: "lg11", name: "\u8ECA\u8F2A\u30FB\u98A8\u8ECA", desc: "\u5EC9\u4FA1\u8F2A\u3067\u3082\u5E73\u5730\u306F\u901F\u3044\u3002\u6CE5\u306F\u6B7B\u5730\u3002", kind: "wheel", speed: 35, turn: 1.8, evasion: 0.28, drain: 3.4, aimBonus: 0, weight: 135, price: 420, tier: 0 },
+    { id: "lg8", name: "\u56DB\u811A\u30FB\u5B50\u9E7F", desc: "\u5B89\u304F\u3066\u3082\u56DB\u3064\u8DB3\u306F\u63FA\u308C\u306A\u3044\u3002", kind: "quad", speed: 23, turn: 1.9, evasion: 0.15, drain: 3.2, aimBonus: 0.05, weight: 210, price: 450, tier: 0 },
+    { id: "lg12", name: "\u9006\u95A2\u7BC0\u30FB\u96DB", desc: "\u8DF3\u306D\u65B9\u306F\u89AA\u8B72\u308A\u3002\u307E\u3060\u9AD8\u304F\u306F\u8DF3\u3079\u306A\u3044\u3002", kind: "reverse", speed: 27, turn: 2.7, evasion: 0.34, drain: 3.8, aimBonus: 0, weight: 155, price: 480, tier: 0 },
+    { id: "lg9", name: "\u5C65\u5E2F\u30FB\u4E80\u7532", desc: "\u9045\u3044\u304C\u71C3\u8CBB\u3088\u304F\u3001\u72D9\u3044\u306F\u6B63\u76F4\u3002", kind: "tank", speed: 15, turn: 1, evasion: 0.07, drain: 1.4, aimBonus: 0.05, weight: 240, price: 520, tier: 0 },
+    { id: "lg10", name: "\u30DB\u30D0\u30FC\u30FB\u6728\u306E\u8449", desc: "\u6CE5\u3082\u68D8\u3082\u77E5\u3089\u306C\u6D6E\u904A\u3002\u7089\u3092\u3088\u304F\u98DF\u3046\u3002", kind: "hover", speed: 34, turn: 1.4, evasion: 0.29, drain: 5.2, aimBonus: 0, weight: 150, price: 560, tier: 0 },
     { id: "lg3", name: "\u56DB\u811A\u30FB\u5B88\u5BAE", desc: "\u4F4E\u3044\u91CD\u5FC3\u3002\u72D9\u3044\u304C\u3076\u308C\u306A\u3044\u3002", kind: "quad", speed: 26, turn: 2, evasion: 0.18, drain: 3.5, aimBonus: 0.07, weight: 230, price: 900, tier: 1 },
     { id: "lg4", name: "\u30DB\u30D0\u30FC\u30FB\u6D6E\u821F", desc: "\u5730\u3092\u6368\u3066\u305F\u8005\u3060\u3051\u304C\u51FA\u305B\u308B\u901F\u5EA6\u3002", kind: "hover", speed: 38, turn: 1.6, evasion: 0.34, drain: 6, aimBonus: 0, weight: 160, price: 1200, tier: 1 },
-    { id: "lg5", name: "\u5C65\u5E2F\u30FB\u57CE\u585E", desc: "\u52D5\u304F\u7832\u5EA7\u3002\u9000\u304B\u305A\u3001\u63FA\u308C\u305A\u3002", kind: "tank", speed: 18, turn: 1.2, evasion: 0.1, drain: 1.5, aimBonus: 0.06, weight: 280, price: 2200, tier: 2 },
     { id: "lg6", name: "\u8ECA\u8F2A\u30FB\u75BE\u99C6", desc: "\u8217\u88C5\u306E\u4E0A\u306A\u3089\u8AB0\u3088\u308A\u901F\u3044\u3002\u6CE5\u306F\u82E6\u624B\u3002", kind: "wheel", speed: 41, turn: 2.2, evasion: 0.34, drain: 3.5, aimBonus: 0, weight: 150, price: 1300, tier: 1 },
-    { id: "lg7", name: "\u9006\u95A2\u7BC0\u30FB\u8DF3\u5175", desc: "\u9CE5\u306E\u811A\u3002\u3088\u304F\u8DF3\u306D\u3001\u3088\u304F\u8EB1\u3059\u3002", kind: "reverse", speed: 34, turn: 2.8, evasion: 0.37, drain: 4, aimBonus: 0, weight: 170, price: 1500, tier: 1 }
+    { id: "lg7", name: "\u9006\u95A2\u7BC0\u30FB\u8DF3\u5175", desc: "\u9CE5\u306E\u811A\u3002\u3088\u304F\u8DF3\u306D\u3001\u3088\u304F\u8EB1\u3059\u3002", kind: "reverse", speed: 34, turn: 2.8, evasion: 0.37, drain: 4, aimBonus: 0, weight: 170, price: 1500, tier: 1 },
+    { id: "lg5", name: "\u5C65\u5E2F\u30FB\u57CE\u585E", desc: "\u52D5\u304F\u7832\u5EA7\u3002\u9000\u304B\u305A\u3001\u63FA\u308C\u305A\u3002", kind: "tank", speed: 18, turn: 1.2, evasion: 0.1, drain: 1.5, aimBonus: 0.06, weight: 280, price: 2200, tier: 2 }
   ],
   gen: [
     { id: "gn1", name: "\u71D0\u5149\u7089", desc: "\u5C0F\u3055\u304F\u78BA\u5B9F\u306A\u706B\u3002", output: 14, cap: 120, weight: 90, price: 250, tier: 0 },
+    { id: "gn5", name: "\u84C4\u5727\u7089", desc: "\u7D30\u304F\u6E9C\u3081\u3066\u3001\u592A\u304F\u653E\u3064\u3002", output: 13, cap: 210, weight: 105, price: 320, tier: 0 },
     { id: "gn2", name: "\u6A19\u6E96\u7089", desc: "\u5DE5\u5EE0\u306E\u5FC3\u81D3\u3001\u91CF\u7523\u578B\u3002", output: 20, cap: 160, weight: 130, price: 400, tier: 0 },
+    { id: "gn6", name: "\u8EFD\u91CF\u7089", desc: "\u7FBD\u306E\u3088\u3046\u306B\u8EFD\u304F\u3001\u5024\u306F\u5F35\u308B\u3002", output: 19, cap: 140, weight: 85, price: 500, tier: 0 },
     { id: "gn3", name: "\u5927\u51FA\u529B\u7089", desc: "\u6483\u3061\u7D9A\u3051\u308B\u305F\u3081\u306E\u706B\u529B\u7089\u3002", output: 28, cap: 220, weight: 200, price: 1e3, tier: 1 },
     { id: "gn4", name: "\u81E8\u754C\u7089", desc: "\u5E38\u306B\u6CB8\u70B9\u3002\u6271\u3044\u306F\u81EA\u5DF1\u8CAC\u4EFB\u3002", output: 38, cap: 300, weight: 290, price: 2400, tier: 2 }
   ],
   armor: [
     { id: "ar1", name: "\u8EFD\u5408\u91D1\u88C5\u7532", desc: "\u7121\u3044\u3088\u308A\u306F\u307E\u3057\u3001\u304C\u901F\u3044\u3002", defense: 0.1, evaPenalty: 0.02, weight: 60, price: 200, tier: 0 },
+    { id: "ar6", name: "\u92F3\u9244\u88C5\u7532", desc: "\u5B89\u304F\u3001\u91CD\u304F\u3001\u305D\u308C\u306A\u308A\u306B\u786C\u3044\u3002", defense: 0.17, evaPenalty: 0.1, weight: 190, price: 260, tier: 0 },
+    { id: "ar5", name: "\u7E4A\u7DAD\u88C5\u7532", desc: "\u7DE8\u3093\u3060\u7E4A\u7DAD\u304C\u53D7\u3051\u6D41\u3059\u3002\u8EFD\u3055\u306F\u5B88\u308A\u3002", defense: 0.16, evaPenalty: 0.03, weight: 85, price: 280, tier: 0 },
     { id: "ar2", name: "\u6A19\u6E96\u8907\u5408\u88C5\u7532", desc: "\u5747\u6574\u306E\u3068\u308C\u305F\u5B88\u308A\u3002", defense: 0.22, evaPenalty: 0.06, weight: 130, price: 350, tier: 0 },
     { id: "ar3", name: "\u91CD\u5C64\u88C5\u7532", desc: "\u53D7\u3051\u3066\u7ACB\u3064\u305F\u3081\u306E\u9244\u58C1\u3002", defense: 0.26, evaPenalty: 0.12, weight: 220, price: 1100, tier: 1 },
     { id: "ar4", name: "\u53CD\u5FDC\u88C5\u7532", desc: "\u7740\u5F3E\u306E\u77AC\u9593\u3060\u3051\u786C\u304F\u306A\u308B\u3002", defense: 0.28, evaPenalty: 0.07, weight: 170, price: 1400, tier: 1 }
   ],
   wpn: [
-    // band: 適正帯(melee=白兵0-15m / short=15-120m / mid=120-350m / long=350-900m)。
+    // band: 適正帯(melee=白兵0-15m / short=15-120m / mid=120-350m / long=300-900m)。
     // 帯域外でも range までは撃てるが命中・威力が落ちる(bandMult)。白兵武器は range=間合いの外は当たらない。
     // breakPower: 命中1発ごとの部位破壊率。arm: ミサイルのアーミング距離(未満で発射=自爆スプラッシュ)。
     { id: "wp1", name: "\u7A81\u6483\u30E9\u30A4\u30D5\u30EB", desc: "\u4E09\u70B9\u5C04\u306E\u57FA\u672C\u5175\u88C5\u3002\u4E2D\u8DDD\u96E2\u306E\u4E3B\u5F79\u3002", kind: "rifle", band: "mid", dmg: 14, range: 480, acc: 0.58, cooldown: 1.4, encost: 5, projSpeed: 520, burst: 3, ammo: 135, breakPower: 0.04, weight: 90, price: 300, tier: 0 },
-    { id: "wp2", name: "\u4E2D\u8DDD\u96E2\u30D3\u30FC\u30E0", desc: "\u307E\u3063\u3059\u3050\u5C4A\u304F\u5149\u6761\u3002", kind: "beam", band: "mid", dmg: 38, range: 520, acc: 0.62, cooldown: 2.2, encost: 16, projSpeed: 0, burst: 1, breakPower: 0.05, weight: 120, price: 450, tier: 0 },
+    { id: "wp2", name: "\u4E2D\u8DDD\u96E2\u30D3\u30FC\u30E0", desc: "\u307E\u3063\u3059\u3050\u5C4A\u304F\u5149\u6761\u3002", kind: "beam", band: "mid", dmg: 36, range: 520, acc: 0.62, cooldown: 2.2, encost: 16, projSpeed: 0, burst: 1, breakPower: 0.05, weight: 120, price: 450, tier: 0 },
     { id: "wp5", name: "\u96F6\u8DDD\u96E2\u6563\u5F3E", desc: "\u61D0\u306B\u5165\u308C\u3070\u5D50\u3002\u77ED\u8DDD\u96E2\u306E\u738B\u3002", kind: "shotgun", band: "short", dmg: 8, range: 190, acc: 0.75, cooldown: 1.8, encost: 6, projSpeed: 450, burst: 6, ammo: 96, breakPower: 0.022, weight: 110, price: 320, tier: 0 },
+    { id: "wp14", name: "\u6EB6\u65AD\u30D0\u30FC\u30CA\u30FC", desc: "\u88C5\u7532\u3092\u88C2\u304F\u8FD1\u3044\u5149\u3002\u5F3E\u306F\u8981\u3089\u306A\u3044\u3002", kind: "beam", band: "short", pierce: 0.35, dmg: 40, range: 160, acc: 0.7, cooldown: 1.6, encost: 9, projSpeed: 0, burst: 1, breakPower: 0.05, weight: 95, price: 420, tier: 0 },
+    { id: "wp11", name: "\u4F5C\u696D\u7528\u91CD\u5203", desc: "\u5DE5\u5EE0\u306E\u89E3\u4F53\u5203\u3002\u6226\u3067\u3082\u9244\u306F\u65AC\u308C\u308B\u3002", kind: "blade", band: "melee", dmg: 96, range: 10, acc: 0.76, cooldown: 1.9, encost: 13, projSpeed: 0, burst: 1, breakPower: 0.09, weight: 75, price: 480, tier: 0 },
+    { id: "wp12", name: "\u5C0F\u578B\u30DF\u30B5\u30A4\u30EB", desc: "\u5C0F\u3055\u306A\u5F27\u3092\u4E8C\u3064\u3002\u9060\u304F\u3078\u306E\u6328\u62F6\u3002", kind: "missile", band: "long", arm: 150, dmg: 52, range: 620, acc: 0.56, cooldown: 4.2, encost: 7, projSpeed: 175, burst: 2, ammo: 20, breakPower: 0.07, weight: 105, price: 500, tier: 0 },
+    { id: "wp13", name: "\u9577\u9283\u8EAB\u30E9\u30A4\u30D5\u30EB", desc: "\u4E00\u767A\u305A\u3064\u3001\u9060\u304F\u304B\u3089\u3002\u72D9\u6483\u306E\u5165\u53E3\u3002", kind: "rifle", band: "long", dmg: 40, range: 640, acc: 0.55, cooldown: 2.5, encost: 6, projSpeed: 850, burst: 1, ammo: 40, breakPower: 0.05, weight: 125, price: 550, tier: 0 },
     { id: "wp8", name: "\u901F\u5C04\u6A5F\u95A2\u7832", desc: "\u8EFD\u304F\u3001\u3046\u308B\u3055\u304F\u3001\u9014\u5207\u308C\u306A\u3044\u3002", kind: "rifle", band: "mid", dmg: 8, range: 360, acc: 0.62, cooldown: 0.55, encost: 2, projSpeed: 600, burst: 2, ammo: 180, breakPower: 0.02, weight: 100, price: 600, tier: 1 },
     { id: "wp3", name: "\u30DF\u30B5\u30A4\u30EB\u30DD\u30C3\u30C9", desc: "\u5F27\u3092\u63CF\u304F\u53CC\u767A\u5F3E\u3002\u8FD1\u3059\u304E\u308B\u767A\u5C04\u306F\u5DF1\u3082\u713C\u304F\u3002", kind: "missile", band: "long", arm: 170, dmg: 60, range: 700, acc: 0.56, cooldown: 4.2, encost: 10, projSpeed: 180, burst: 2, ammo: 16, breakPower: 0.12, weight: 150, price: 900, tier: 1 },
     { id: "wp6", name: "\u5149\u5203", desc: "\u9593\u5408\u3044\u5341\u4E00\u3002\u305D\u308C\u3088\u308A\u5185\u306F\u5149\u306E\u9593\u5408\u3044\u3002", kind: "blade", band: "melee", dmg: 112, range: 11, acc: 0.8, cooldown: 2, encost: 18, projSpeed: 0, burst: 1, breakPower: 0.13, weight: 80, price: 1e3, tier: 1 },
     { id: "wp4", name: "\u30EC\u30FC\u30EB\u30AC\u30F3", desc: "\u97F3\u3088\u308A\u901F\u3044\u4E00\u6483\u3002\u5916\u305B\u3070\u9699\u3002", kind: "railgun", band: "long", dmg: 88, range: 780, acc: 0.5, cooldown: 5.5, encost: 30, projSpeed: 1400, burst: 1, ammo: 16, breakPower: 0.18, weight: 260, price: 2e3, tier: 2 },
     { id: "wp7", name: "\u72D9\u6483\u30D3\u30FC\u30E0", desc: "\u5730\u5E73\u306E\u5411\u3053\u3046\u304B\u3089\u7D42\u308F\u3089\u305B\u308B\u3002", kind: "beam", band: "long", dmg: 70, range: 880, acc: 0.52, cooldown: 4.8, encost: 26, projSpeed: 0, burst: 1, breakPower: 0.09, weight: 210, price: 2600, tier: 2 },
-    { id: "wp9", name: "\u30C9\u30EA\u30EB\u30A2\u30FC\u30E0", desc: "\u56DE\u3057\u3066\u7A7F\u3064\u3002\u88C5\u7532\u306F\u610F\u5473\u3092\u5931\u3046\u3002", kind: "drill", band: "melee", dmg: 128, range: 9, acc: 0.74, cooldown: 3, encost: 20, projSpeed: 0, burst: 1, breakPower: 0.15, weight: 140, price: 1300, tier: 1 },
+    { id: "wp9", name: "\u30C9\u30EA\u30EB\u30A2\u30FC\u30E0", desc: "\u56DE\u3057\u3066\u7A7F\u3064\u3002\u88C5\u7532\u306F\u610F\u5473\u3092\u5931\u3046\u3002", kind: "drill", band: "melee", pierce: 0.4, dmg: 128, range: 9, acc: 0.74, cooldown: 3, encost: 20, projSpeed: 0, burst: 1, breakPower: 0.15, weight: 140, price: 1300, tier: 1 },
     { id: "wp10", name: "\u30ED\u30B1\u30C3\u30C8\u30D1\u30F3\u30C1", desc: "\u62F3\u306F\u98DB\u3093\u3067\u3001\u5E30\u3063\u3066\u304F\u308B\u3002", kind: "rocketpunch", band: "short", dmg: 92, range: 240, acc: 0.62, cooldown: 3.4, encost: 14, projSpeed: 220, burst: 1, breakPower: 0.11, weight: 130, price: 1800, tier: 2 }
   ],
   ai: [
     { id: "ai1", name: "\u5F37\u8972OS\u300C\u30AA\u30AA\u30AB\u30DF\u300D", desc: "\u9593\u5408\u3044\u3092\u6F70\u3057\u3066\u98DF\u3089\u3044\u3064\u304F\u3002", engage: 8, aggression: 1, kite: false, weight: 0, price: 150, tier: 0 },
     { id: "ai2", name: "\u5C04\u6483OS\u300C\u30E4\u30DE\u30C9\u30EA\u300D", desc: "\u4E2D\u8DDD\u96E2\u306E\u6483\u3061\u5408\u3044\u3092\u5236\u3059\u3002", engage: 235, aggression: 0.6, kite: false, weight: 0, price: 200, tier: 0 },
+    { id: "ai5", name: "\u9060\u6226OS\u300C\u30B5\u30AE\u300D", desc: "\u9593\u5408\u3044\u306E\u5916\u304B\u3089\u3001\u8A70\u3081\u3055\u305B\u306A\u3044\u3002", engage: 560, aggression: 0.5, kite: true, weight: 0, price: 380, tier: 0 },
+    { id: "ai6", name: "\u904A\u6483OS\u300C\u30CE\u30E9\u300D", desc: "\u6211\u6D41\u306E\u4E00\u6483\u96E2\u8131\u3002\u6DF1\u8FFD\u3044\u304C\u7389\u306B\u7455\u3002", engage: 70, aggression: 0.7, kite: true, weight: 0, price: 400, tier: 0 },
     { id: "ai3", name: "\u904A\u6483OS\u300C\u30C4\u30D0\u30E1\u300D", desc: "\u96E2\u308C\u3001\u56DE\u308A\u3001\u307E\u305F\u523A\u3059\u3002", engage: 200, aggression: 0.55, kite: true, weight: 0, price: 700, tier: 1 },
     { id: "ai4", name: "\u72D9\u6483OS\u300C\u30D5\u30AF\u30ED\u30A6\u300D", desc: "\u9060\u304F\u3067\u5F85\u3064\u3002\u7372\u7269\u306F\u6765\u308B\u3002", engage: 520, aggression: 0.4, kite: true, weight: 0, price: 1600, tier: 2 }
   ]
@@ -55,7 +73,7 @@ var BANDS = {
   melee: { min: 0, max: 15, label: "\u767D\u5175" },
   short: { min: 15, max: 120, label: "\u77ED\u8DDD\u96E2" },
   mid: { min: 120, max: 350, label: "\u4E2D\u8DDD\u96E2" },
-  long: { min: 350, max: 900, label: "\u9060\u8DDD\u96E2" }
+  long: { min: 300, max: 900, label: "\u9060\u8DDD\u96E2" }
 };
 function bandMult(w, dist) {
   const b = BANDS[w.band] || BANDS.mid;
@@ -187,7 +205,7 @@ function codename(seedStr) {
   return `${pre}-${num} ${nm}`;
 }
 
-// ../../public/kouki/fields.js
+// ../../public/fields.js
 var FIELDS = [
   {
     id: "plain",
@@ -285,7 +303,7 @@ function losBlockedBy(x1, y1, x2, y2, walls) {
   return best;
 }
 
-// ../../public/kouki/sim.js
+// ../../public/sim.js
 var ARENA = 1e3;
 var DT = 0.05;
 var SAMPLE = 0.1;
@@ -318,6 +336,16 @@ var angNorm = (a) => {
 };
 var isMelee = (w) => w.kind === "blade" || w.kind === "drill";
 var isParryableRanged = (w) => w.kind === "rifle" || w.kind === "shotgun" || w.kind === "rocketpunch";
+function evadeMult(w) {
+  if (w.kind === "beam" || w.projSpeed === 0)
+    return 0.8;
+  if (w.kind === "railgun")
+    return 0.85;
+  const ps = w.projSpeed || 600;
+  if (ps >= 600)
+    return 1;
+  return clamp(1 + (600 - ps) / 425 * 0.15, 1, 1.15);
+}
 function mkMech(build, x, y, h, pilot) {
   const st = deriveStats(build);
   if (!st.valid)
@@ -354,6 +382,8 @@ function mkMech(build, x, y, h, pilot) {
     cand: null,
     candIdx: 0,
     // 適応交戦距離
+    riposteUntil: -1,
+    // Ver6: パリィ後の反撃窓の終了時刻
     dIn: 0,
     dOut: 0,
     epochT: 0,
@@ -365,14 +395,15 @@ function pAcc(w, dist, shooter, slot) {
   if (bm.acc <= 0)
     return 0;
   return clamp(
-    w.acc * bm.acc + shooter.st.aimBonus + (shooter.pilotAcc || 0) + ARM_ACC[shooter.pd[slot]],
+    (w.acc + shooter.st.aimBonus) * bm.acc + (shooter.pilotAcc || 0) + ARM_ACC[shooter.pd[slot]],
     0.05,
     0.97
   );
 }
-function pDodge(target) {
+function pDodge(target, w) {
   const ms = 0.6 + 0.8 * clamp((target.spdNow || 0) / 36, 0, 1);
-  return clamp(target.st.evasion * LEG_EVA[target.pd[2]] * ms + (target.pilotEva || 0), 0, 0.62);
+  const em = w ? evadeMult(w) : 1;
+  return clamp(target.st.evasion * LEG_EVA[target.pd[2]] * ms * em + (target.pilotEva || 0), 0, 0.62);
 }
 function pParry(w, target) {
   const hasMelee = target.wpns.some((wp) => isMelee(wp.def));
@@ -527,6 +558,10 @@ function simulate(buildA, buildB, seed, opts = {}) {
         kite = false;
         aggr = clamp(aggr + 0.35, 0, 1);
       }
+      if (t < me.riposteUntil) {
+        kite = false;
+        aggr = clamp(aggr + 0.3, 0, 1);
+      }
       if (!usableRanged) {
         if (hasMelee) {
           engage = 7;
@@ -572,6 +607,12 @@ function simulate(buildA, buildB, seed, opts = {}) {
       } else {
         vx = ux * fwd - uy * strafe;
         vy = uy * fwd + ux * strafe;
+        if (fwd < 0) {
+          const ccx = field.shape.kind === "circle" ? field.shape.cx : (field.shape.w || ARENA) / 2;
+          const ccy = field.shape.kind === "circle" ? field.shape.cy : (field.shape.h || ARENA) / 2;
+          vx += (ccx - me.x) / 800;
+          vy += (ccy - me.y) / 800;
+        }
         const vlen = Math.hypot(vx, vy) || 1;
         spd = effSpeed * clamp(Math.abs(fwd) + 0.35, 0.75, 1);
         if (fwd > 0 && err > 150)
@@ -715,6 +756,11 @@ function simulate(buildA, buildB, seed, opts = {}) {
           continue;
         me.en -= w.encost;
         wp.t = w.cooldown;
+        const riposte = t < me.riposteUntil;
+        if (riposte)
+          me.riposteUntil = -1;
+        const accBonus = riposte ? 0.15 : 0;
+        const dmgMul = riposte ? 1.3 : 1;
         const rounds = wp.a === Infinity ? w.burst : Math.min(w.burst, wp.a);
         if (wp.a !== Infinity) {
           wp.a -= rounds;
@@ -734,6 +780,8 @@ function simulate(buildA, buildB, seed, opts = {}) {
           nDodge: 0,
           nParry: 0,
           nMiss: 0,
+          nSplash: 0,
+          splashSum: 0,
           remain: 0,
           n: rounds
         };
@@ -746,6 +794,8 @@ function simulate(buildA, buildB, seed, opts = {}) {
           burst: rounds,
           slot: s2,
           // 0=右腕 1=左腕(3Dの攻撃モーション用)
+          rip: riposte ? 1 : 0,
+          // 反撃射(実況/演出用)
           x: me.x,
           y: me.y,
           tx: foeM.x,
@@ -757,16 +807,16 @@ function simulate(buildA, buildB, seed, opts = {}) {
           const tFire = t + j * 0.12;
           const fly = w.projSpeed > 0 ? dist / w.projSpeed : 0;
           let outcome = "hit";
-          if (rng() > pAcc(w, dist, me, s2))
+          if (rng() > clamp(pAcc(w, dist, me, s2) + accBonus, 0.05, 0.97))
             outcome = "miss";
-          else if (rng() < pDodge(foeM))
+          else if (rng() < pDodge(foeM, w))
             outcome = "dodge";
           else if (rng() < pParry(w, foeM)) {
             outcome = "parry";
             foeM.en = Math.max(0, foeM.en - 6);
           }
-          const defEff = w.kind === "drill" ? foeM.st.defense * 0.6 : foeM.st.defense;
-          const dmg = Math.round(w.dmg * bm.dmg * (1 - defEff));
+          const defEff = foeM.st.defense * (1 - (w.pierce || 0));
+          const dmg = Math.round(w.dmg * bm.dmg * dmgMul * (1 - defEff));
           pending.push({
             type: "shot",
             tImpact: tFire + fly,
@@ -899,9 +949,38 @@ function simulate(buildA, buildB, seed, opts = {}) {
         g.remain = Math.max(0, Math.round(tgt.hp));
         if (p.outcome === "dodge") {
           g.nDodge++;
-          ev(p.tImpact, "dodge", { who: p.si, targ: p.ti, wpn: p.w.kind, wname: p.w.name, x: tgt.x, y: tgt.y });
+          let splash = 0;
+          if (p.w.kind === "missile") {
+            splash = Math.round(p.dmg * 0.3);
+            if (splash > 0) {
+              tgt.hp -= splash;
+              m[p.si].dOut += splash;
+              tgt.dIn += splash;
+              m[p.si].dmgCum += splash;
+              g.nSplash++;
+              g.splashSum += splash;
+              g.remain = Math.max(0, Math.round(tgt.hp));
+            }
+          }
+          ev(p.tImpact, "dodge", {
+            who: p.si,
+            targ: p.ti,
+            wpn: p.w.kind,
+            wname: p.w.name,
+            x: tgt.x,
+            y: tgt.y,
+            splash,
+            remain: g.remain
+          });
+          if (splash > 0 && tgt.hp <= 0) {
+            tgt.alive = false;
+            winner = p.si;
+            endReason = "splash";
+            ev(p.tImpact, "destroyed", { who: p.ti, by: p.si, reason: "splash", x: tgt.x, y: tgt.y });
+          }
         } else if (p.outcome === "parry") {
           g.nParry++;
+          tgt.riposteUntil = p.tImpact + 1.2;
           ev(p.tImpact, "parry", { who: p.si, targ: p.ti, wpn: p.w.kind, wname: p.w.name, x: tgt.x, y: tgt.y });
         } else {
           g.nMiss++;
@@ -948,8 +1027,9 @@ function simulate(buildA, buildB, seed, opts = {}) {
   ev(duration, "end", {
     winner,
     reason: endReason,
-    hpA: Math.max(0, Math.round(m[0].hp)),
-    hpB: Math.max(0, Math.round(m[1].hp))
+    // 撃破された機体は残HP=0で報告する(胴大破など致命弾以外の撃破ではhpが正のまま残るため)。
+    hpA: m[0].alive ? Math.max(0, Math.round(m[0].hp)) : 0,
+    hpB: m[1].alive ? Math.max(0, Math.round(m[1].hp)) : 0
   });
   return {
     winner,
@@ -977,13 +1057,13 @@ function buildLog(events, groups, names, field) {
       if (g.nHit)
         parts.push(`${g.nHit}\u767A\u547D\u4E2D \u8A08${g.dmgSum}`);
       if (g.nDodge)
-        parts.push(`${g.nDodge}\u767A\u56DE\u907F\u3055\u308C\u308B`);
+        parts.push(`${g.nDodge}\u767A\u56DE\u907F\u3055\u308C\u308B` + (g.splashSum ? `(\u7206\u98A8${g.splashSum})` : ""));
       if (g.nParry)
         parts.push(`${g.nParry}\u767A\u5F3E\u304B\u308C\u308B`);
       if (g.nMiss)
         parts.push(`${g.nMiss}\u767A\u305D\u308C\u308B`);
       const res = parts.length ? parts.join("\u30FB") : "\u4E0D\u767A";
-      const rem = g.nHit ? `(${tag(e.targ)}\u6B8B${g.remain})` : "";
+      const rem = g.nHit || g.splashSum ? `(${tag(e.targ)}\u6B8B${g.remain})` : "";
       L.push(`${T(e.t)} ${tag(e.who)} ${g.wname}\u767A\u5C04(\u8DDD\u96E2${e.dist}) \u2192 ${res}${rem}`);
     } else if (e.kind === "ammo_out") {
       L.push(`${T(e.t)} [\u5F3E\u5207\u308C] ${tag(e.who)} ${e.wname} \u6B8B\u5F3E\u30BC\u30ED`);
@@ -998,7 +1078,7 @@ function buildLog(events, groups, names, field) {
     } else if (e.kind === "shift") {
       L.push(`${T(e.t)} [\u6226\u8853\u5909\u66F4] ${tag(e.who)} \u4EA4\u6226\u8DDD\u96E2\u3092${e.dist}m\u5E2F\u3078\u79FB\u884C`);
     } else if (e.kind === "destroyed") {
-      L.push(`${T(e.t)} [\u6483\u7834] ${tag(e.who)} ` + (e.reason === "core" ? "\u80F4\u4F53\u5927\u7834 \u2014 \u6A5F\u4F53\u69CB\u9020\u5D29\u58CA" : "\u4E3B\u6A5F\u95A2\u505C\u6B62 \u2014 \u6A5F\u80FD\u3092\u55AA\u5931"));
+      L.push(`${T(e.t)} [\u6483\u7834] ${tag(e.who)} ` + (e.reason === "core" ? "\u80F4\u4F53\u5927\u7834 \u2014 \u6A5F\u4F53\u69CB\u9020\u5D29\u58CA" : e.reason === "splash" ? "\u56DE\u907F\u3059\u308B\u3082\u7206\u98A8\u306B\u5451\u307E\u308C \u2014 \u6A5F\u80FD\u3092\u55AA\u5931" : "\u4E3B\u6A5F\u95A2\u505C\u6B62 \u2014 \u6A5F\u80FD\u3092\u55AA\u5931"));
     } else if (e.kind === "phase") {
       L.push(`${T(e.t)} [\u7D4C\u904E] \u6B8B\u5B58 TGT-A:${e.hpA}% / TGT-B:${e.hpB}%`);
     } else if (e.kind === "end") {
@@ -1255,8 +1335,10 @@ async function oauthCallback(env, url, provider) {
     body: form.toString()
   });
   const tok = await tokRes.json();
-  if (!tok.access_token)
-    return new Response("token failed", { status: 400 });
+  if (!tok.access_token) {
+    const detail = (tok.error || "http " + tokRes.status) + (tok.error_description ? " \u2014 " + tok.error_description : "");
+    return new Response("token failed: " + detail, { status: 400 });
+  }
   const meRes = await fetch(p.userUrl, {
     headers: { "Authorization": "Bearer " + tok.access_token, "User-Agent": "fable-playground", "Accept": "application/json" }
   });
