@@ -1,11 +1,10 @@
-// kouki-dev で確定したシムを本番へ一括リリースする(リプレイ互換の掟3・5)。
+// public/dev で確定したシムを本番へ一括リリースする(リプレイ互換の掟3・5)。
 //   node tools/harness/release-sim.mjs
-// やること: ①kouki-dev のシム3ファイルを本番 kouki/ へコピー ②REPLAY_V を +1
+// やること: ①public/dev のシム3ファイルを本番 public/ へコピー ②REPLAY_V を +1
 //           ③新しい sims/v<新>/ に凍結スナップショット作成 ④等価性を即検証
 // リリース後にやること(このスクリプトはやらない):
 //   - node tools/harness/check-freeze.mjs と実ブラウザ検証
 //   - workers/kouki の再デプロイ(サーバ権威シムも変わる。wrangler 認証のあるマシンで)
-//   - public/dev/ の削除コミット
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -36,4 +35,4 @@ for (const f of TRIO) {
 }
 if (ng) process.exit(1);
 console.log(`リリース完了: REPLAY_V ${oldV} → ${newV} / sims/v${newV}/ 作成・等価性OK`);
-console.log('残タスク: check-freeze+実ブラウザ検証 / workers/kouki 再デプロイ(申し送り可) / kouki-dev 削除コミット');
+console.log('残タスク: check-freeze+実ブラウザ検証 / workers/kouki 再デプロイ(申し送り可) (public/dev は常設・削除しない)');
