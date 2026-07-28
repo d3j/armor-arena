@@ -12,6 +12,9 @@ const A = {
   skirmish: { frame:'fr1', legs:'lg4', gen:'gn3', armor:'ar1', wpnR:'wp8', wpnL:'wp3', ai:'ai3', color:'#4d7ea8', decal:'none', name:'' },
   driller:  { frame:'fr3', legs:'lg7', gen:'gn3', armor:'ar4', wpnR:'wp9', wpnL:'wp5', ai:'ai1', color:'#c2a35c', decal:'none', name:'' },
   wheeler:  { frame:'fr1', legs:'lg6', gen:'gn2', armor:'ar1', wpnR:'wp1', wpnL:'wp10', ai:'ai3', color:'#7d6bb0', decal:'none', name:'' },
+  // St3 追加パーツ(fr8/lg13/lg14/gn7/ar7/wp15〜wp18)を使うアーキタイプ(新パーツのバランス監視)
+  lancer:   { frame:'fr8', legs:'lg13', gen:'gn7', armor:'ar2', wpnR:'wp17', wpnL:'wp15', ai:'ai3', color:'#8fd0ff', decal:'none', name:'' },
+  bombard:  { frame:'fr5', legs:'lg14', gen:'gn3', armor:'ar7', wpnR:'wp18', wpnL:'wp16', ai:'ai5', color:'#c2a35c', decal:'none', name:'' },
 };
 const FIELD_IDS = ['plain','sekichu','deitan','crater','haikyo','ibara'];
 
@@ -255,7 +258,7 @@ console.log('== 多視点実況(構造検証のみ・内容はOpusレビュー�
   const { LINES, VOICE_ROLES } = await import(`${DIR}/voice-lines.js`);
   const { narrate } = await import(`${DIR}/voice.js`);
   const ROLES = new Set(Object.keys(VOICE_ROLES).concat([]));
-  const PH = /\{(A|B|ME|FOE|WPN|DMG|DIST|HP|FIELD|PART)\}/g;
+  const PH = /\{(A|B|ME|FOE|WPN|DMG|DIST|HP|FIELD|PART|LEGA|LEGB|WA|WB)\}/g;   // LEGA〜WB=St3 start_build 用
   let bad = 0, total = 0, tooLong = 0, unknownPh = 0;
   for (const [k, roles] of Object.entries(LINES)) {
     for (const [r, arr] of Object.entries(roles)) {
@@ -271,8 +274,8 @@ console.log('== 多視点実況(構造検証のみ・内容はOpusレビュー�
   ok(`セリフ集の構造(総${total}本)`, bad === 0 && unknownPh === 0 && total >= 200);
   ok('行長 ≤ 60字', tooLong === 0, tooLong ? `${tooLong}本超過` : '');
   const r1 = simulate(A.assault, A.heavy, 777, { fieldId: 'sekichu', nameA: 'アルファ', nameB: 'ブラボー' });
-  const v1 = narrate(r1, { nameA: 'アルファ', nameB: 'ブラボー', seed: 777 });
-  const v2 = narrate(r1, { nameA: 'アルファ', nameB: 'ブラボー', seed: 777 });
+  const v1 = narrate(r1, { nameA: 'アルファ', nameB: 'ブラボー', seed: 777, buildA: A.assault, buildB: A.heavy });
+  const v2 = narrate(r1, { nameA: 'アルファ', nameB: 'ブラボー', seed: 777, buildA: A.assault, buildB: A.heavy });
   ok('narrate 決定論', JSON.stringify(v1) === JSON.stringify(v2));
   ok('narrate 行が時刻昇順', v1.every((x, i) => i === 0 || v1[i-1].t <= x.t));
   ok('narrate 役割が正当', v1.every(x => ROLES.has(x.role)));

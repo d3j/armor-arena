@@ -598,7 +598,8 @@ function startBattle(myBuild, foeBuild, seed, ctx) {
   catch (e) { ui.toast('機体が不正です: ' + e.message); return; }
   dbg('battle_start', { mode: ctx.mode, seed, field: res.fieldId });
   const evs = res.events.slice().sort((a, b) => a.t - b.t);
-  const voice = narrate(res, { nameA: myName, nameB: ctx.enemyName || '敵機', seed });
+  const voice = narrate(res, { nameA: myName, nameB: ctx.enemyName || '敵機', seed,
+    buildA: myBuild, buildB: foeBuild });   // St3: パーツ連動実況(ロードアウト紹介・脚種別回避/破損)
   battle = { res, evs, voice, ctx, t: 0, evIdx: 0, logIdx: 0,
     obsState: res.field.obstacles.map((o, i2) => ({ kind: o.kind, x: o.x, y: o.y, r: o.r, alive: true, hpFrac: 1, hp0: o.hp, idx: i2 })),
     lastAtk: [null, null],

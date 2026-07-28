@@ -10,6 +10,7 @@ export const PARTS = {
     { id:'fr6', name:'クロガネ厚殻', desc:'安い鉄を厚く重ねた。値段の分は止める。', hp:750, capacity:1150, weight:250, price:750, tier:0 },
     { id:'fr4', name:'カゲロウ襲撃殻', desc:'骨を削って積載を残した奇襲仕様。', hp:560, capacity:900, weight:130, price:1100,  tier:1 },
     { id:'fr3', name:'ヨロイ重装殻', desc:'鈍いが沈まない。壁になる殻。',     hp:920, capacity:1280, weight:260, price:1400,  tier:1 },
+    { id:'fr8', name:'ウツセミ換装殻', desc:'殻を削り、積むために生まれた骨。', hp:620, capacity:1250, weight:160, price:1800, tier:1 },
     { id:'fr5', name:'タイシャク旗甲殻', desc:'旗機のための過剰な体躯。',      hp:980, capacity:1550, weight:340, price:3200, tier:2 },
   ],
   legs: [
@@ -26,12 +27,15 @@ export const PARTS = {
     { id:'lg6', name:'車輪・疾駆', desc:'舗装の上なら誰より速い。泥は苦手。', kind:'wheel', speed:41, turn:2.2, evasion:0.34, drain:3.5, aimBonus:0,    weight:150, price:1300,  tier:1 },
     { id:'lg7', name:'逆関節・跳兵', desc:'鳥の脚。よく跳ね、よく躱す。',   kind:'reverse', speed:34, turn:2.8, evasion:0.37, drain:4.0, aimBonus:0,  weight:170, price:1500, tier:1 },
     { id:'lg5', name:'履帯・城塞', desc:'動く砲座。退かず、揺れず。',   kind:'tank',  speed:18, turn:1.2, evasion:0.10, drain:1.5, aimBonus:0.06, weight:280, price:2200, tier:2 },
+    { id:'lg13', name:'二脚・野分', desc:'嵐の名を持つ決戦二脚。',      kind:'biped', speed:33, turn:3.0, evasion:0.36, drain:4.2, aimBonus:0.01, weight:175, price:2400, tier:2 },
+    { id:'lg14', name:'四脚・岩戸', desc:'四つの足が大地を掴む砲脚。',  kind:'quad',  speed:27, turn:2.1, evasion:0.20, drain:4.0, aimBonus:0.10, weight:290, price:2600, tier:2 },
   ],
   gen: [
     { id:'gn1', name:'燐光炉', desc:'小さく確実な火。',       output:14, cap:120, weight:90,  price:250,    tier:0 },
     { id:'gn5', name:'蓄圧炉', desc:'細く溜めて、太く放つ。', output:13, cap:210, weight:105, price:320,   tier:0 },
     { id:'gn2', name:'標準炉', desc:'工廠の心臓、量産型。',   output:20, cap:160, weight:130, price:400,    tier:0 },
     { id:'gn6', name:'軽量炉', desc:'羽のように軽く、値は張る。', output:19, cap:140, weight:85, price:500, tier:0 },
+    { id:'gn7', name:'渦潮炉', desc:'渦を巻いて絞り出す中庸の火。', output:24, cap:190, weight:150, price:800, tier:1 },
     { id:'gn3', name:'大出力炉', desc:'撃ち続けるための火力炉。', output:28, cap:220, weight:200, price:1000, tier:1 },
     { id:'gn4', name:'臨界炉', desc:'常に沸点。扱いは自己責任。', output:38, cap:300, weight:290, price:2400, tier:2 },
   ],
@@ -42,6 +46,7 @@ export const PARTS = {
     { id:'ar2', name:'標準複合装甲', desc:'均整のとれた守り。',     defense:0.22, evaPenalty:0.06, weight:130, price:350,   tier:0 },
     { id:'ar3', name:'重層装甲', desc:'受けて立つための鉄壁。',     defense:0.26, evaPenalty:0.12, weight:220, price:1100, tier:1 },
     { id:'ar4', name:'反応装甲', desc:'着弾の瞬間だけ硬くなる。',   defense:0.28, evaPenalty:0.07, weight:170, price:1400, tier:1 },
+    { id:'ar7', name:'流体装甲', desc:'受けた力を流して逃がす水の鎧。', defense:0.30, evaPenalty:0.05, weight:200, price:2600, tier:2 },
   ],
   wpn: [
     // band: 適正帯(melee=白兵0-15m / short=15-120m / mid=120-350m / long=300-900m)。
@@ -61,6 +66,10 @@ export const PARTS = {
     { id:'wp7', name:'狙撃ビーム', desc:'地平の向こうから終わらせる。', kind:'beam',    band:'long',  dmg:70, range:880, acc:0.52, cooldown:4.8, encost:26, projSpeed:0,    burst:1, breakPower:0.09, weight:210, price:2600, tier:2 },
     { id:'wp9', name:'ドリルアーム', desc:'回して穿つ。装甲は意味を失う。', kind:'drill',  band:'melee', pierce:0.4, dmg:128, range:9,  acc:0.74, cooldown:3.0, encost:20, projSpeed:0,   burst:1, breakPower:0.15, weight:140, price:1300,  tier:1 },
     { id:'wp10', name:'ロケットパンチ', desc:'拳は飛んで、帰ってくる。',   kind:'rocketpunch', band:'short', dmg:92, range:240, acc:0.62, cooldown:3.4, encost:14, projSpeed:220, burst:1, breakPower:0.11, weight:130, price:1800, tier:2 },
+    { id:'wp15', name:'双連ビーム', desc:'二筋の光が同じ傷を抉る。',     kind:'beam',    band:'mid',   dmg:26, range:500, acc:0.60, cooldown:2.4, encost:20, projSpeed:0,   burst:2, breakPower:0.05, weight:160, price:1300, tier:1 },
+    { id:'wp16', name:'重散弾', desc:'一呼吸で鉄の嵐を吐く大口径。',     kind:'shotgun', band:'short', dmg:11, range:200, acc:0.72, cooldown:2.4, encost:9,  projSpeed:430, burst:7, ammo:70, breakPower:0.03, weight:170, price:950, tier:1 },
+    { id:'wp17', name:'徹甲ライフル', desc:'装甲ごと芯を撃ち抜く一発。', kind:'rifle',   band:'mid',   pierce:0.3, dmg:26, range:450, acc:0.56, cooldown:2.0, encost:8, projSpeed:700, burst:1, ammo:60, breakPower:0.06, weight:140, price:1400, tier:1 },
+    { id:'wp18', name:'大蛇ミサイル', desc:'三つ首の蛇が空を這う。',     kind:'missile', band:'long',  arm:160, dmg:100, range:760, acc:0.58, cooldown:6.0, encost:16, projSpeed:190, burst:3, ammo:12, breakPower:0.16, weight:240, price:2800, tier:2 },
   ],
   ai: [
     { id:'ai1', name:'強襲OS「オオカミ」', desc:'間合いを潰して食らいつく。', engage:8,  aggression:1.0, kite:false, weight:0, price:150,    tier:0 },

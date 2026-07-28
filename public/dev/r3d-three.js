@@ -51,6 +51,148 @@ function axisVec(a) {
 
 function hexToColor(hex) { return new THREE.Color(hex); }
 
+// ==== プロシージャルテクスチャ(St3): 外部アセットなし・シード固定=毎回同じ見た目 ====
+// 機体=金属パネル(白ベースにパネルライン/リベット/摩耗 → material.color の乗算で機体色が残る)、
+// 地面=テーマ別の土/舗装、岩=節理ノイズ。UV は「面法線のドミナント軸への平面投影」で貼る
+// (箱・柱・多面体の寄せ集めに一様なテクセル密度を与える最短の方法。継ぎ目はパネル柄なら目立たない)。
+function texRng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function makeCanvasTex(size, draw) {
+  const cv = document.createElement('canvas');
+  cv.width = size; cv.height = size;
+  draw(cv.getContext('2d'), size);
+  const tx = new THREE.CanvasTexture(cv);
+  tx.colorSpace = THREE.SRGBColorSpace;
+  tx.wrapS = THREE.RepeatWrapping; tx.wrapT = THREE.RepeatWrapping;
+  return tx;
+}
+function makeMetalTexture() {
+  return makeCanvasTex(256, (c, S) => {
+    const rnd = texRng(0x51E9A3);
+    c.fillStyle = '#d9dbdd'; c.fillRect(0, 0, S, S);
+    // 下地のムラ(圧延ムラ)
+    for (let i = 0; i < 260; i++) {
+      const v = 208 + Math.floor(rnd() * 26);
+      c.fillStyle = `rgba(${v},${v + 1},${v + 2},0.5)`;
+      c.fillRect(rnd() * S, rnd() * S, 2 + rnd() * 14, 2 + rnd() * 10);
+    }
+    // パネルライン(格子をジッタ分割。wrap 継ぎ目対策で 0 と S の両端にも線)
+    c.strokeStyle = 'rgba(84,92,98,0.85)'; c.lineWidth = 1.5;
+    const cells = 4;
+    for (let i = 0; i <= cells; i++) {
+      const base = (i / cells) * S, j1 = i === 0 || i === cells ? 0 : (rnd() - 0.5) * 18;
+      c.beginPath(); c.moveTo(base + j1, 0); c.lineTo(base + j1, S); c.stroke();
+      const j2 = i === 0 || i === cells ? 0 : (rnd() - 0.5) * 18;
+      c.beginPath(); c.moveTo(0, base + j2); c.lineTo(S, base + j2); c.stroke();
+    }
+    // 補助ライン(細く薄い区画割り)
+    c.strokeStyle = 'rgba(110,118,124,0.5)'; c.lineWidth = 1;
+    for (let i = 0; i < 7; i++) {
+      const x = rnd() * S, y = rnd() * S, len = 20 + rnd() * 60;
+      c.beginPath();
+      if (rnd() < 0.5) { c.moveTo(x, y); c.lineTo(x + len, y); } else { c.moveTo(x, y); c.lineTo(x, y + len); }
+      c.stroke();
+    }
+    // リベット(パネル交点付近の鋲)と摩耗(明るい擦れ)
+    for (let i = 0; i < 34; i++) {
+      const x = rnd() * S, y = rnd() * S;
+      c.fillStyle = 'rgba(70,76,82,0.9)';
+      c.beginPath(); c.arc(x, y, 1.6, 0, Math.PI * 2); c.fill();
+      c.fillStyle = 'rgba(238,240,242,0.5)';
+      c.beginPath(); c.arc(x - 0.7, y - 0.7, 0.7, 0, Math.PI * 2); c.fill();
+    }
+    for (let i = 0; i < 26; i++) {
+      c.strokeStyle = `rgba(232,235,238,${0.12 + rnd() * 0.2})`;
+      c.lineWidth = 0.8 + rnd() * 1.4;
+      const x = rnd() * S, y = rnd() * S, a = rnd() * Math.PI, l = 6 + rnd() * 26;
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); c.stroke();
+    }
+  });
+}
+function makeGroundTexture(theme, seed) {
+  return makeCanvasTex(512, (c, S) => {
+    const rnd = texRng(seed);
+    c.fillStyle = theme.ground[1]; c.fillRect(0, 0, S, S);
+    // 土/舗装のまだら(テーマ配色内で明暗)
+    for (const [col2, n, a] of [[theme.ground[0], 340, 0.5], [theme.ground[2], 240, 0.4]]) {
+      c.fillStyle = col2; c.globalAlpha = a;
+      for (let i = 0; i < n; i++) {
+        const x = rnd() * S, y = rnd() * S, r = 2 + rnd() * 16;
+        c.beginPath(); c.ellipse(x, y, r, r * (0.4 + rnd() * 0.6), rnd() * Math.PI, 0, Math.PI * 2); c.fill();
+      }
+    }
+    c.globalAlpha = 1;
+    // ひび/轍(暗い折れ線)
+    c.strokeStyle = 'rgba(0,0,0,0.28)';
+    for (let i = 0; i < 26; i++) {
+      c.lineWidth = 0.8 + rnd() * 1.6;
+      let x = rnd() * S, y = rnd() * S;
+      c.beginPath(); c.moveTo(x, y);
+      for (let k2 = 0; k2 < 5; k2++) { x += (rnd() - 0.5) * 60; y += (rnd() - 0.5) * 60; c.lineTo(x, y); }
+      c.stroke();
+    }
+    // 明るい砂の散り
+    c.fillStyle = 'rgba(255,255,255,0.06)';
+    for (let i = 0; i < 400; i++) c.fillRect(rnd() * S, rnd() * S, 1.5, 1.5);
+  });
+}
+function makeRockTexture() {
+  return makeCanvasTex(256, (c, S) => {
+    const rnd = texRng(0xA7C0DE);
+    c.fillStyle = '#cfcac2'; c.fillRect(0, 0, S, S);
+    for (let i = 0; i < 400; i++) {
+      const v = 168 + Math.floor(rnd() * 60);
+      c.fillStyle = `rgba(${v},${v - 4},${v - 10},0.5)`;
+      const x = rnd() * S, y = rnd() * S, r = 2 + rnd() * 12;
+      c.beginPath(); c.ellipse(x, y, r, r * (0.5 + rnd() * 0.5), rnd() * Math.PI, 0, Math.PI * 2); c.fill();
+    }
+    // 節理(岩の割れ目)
+    c.strokeStyle = 'rgba(58,54,48,0.55)';
+    for (let i = 0; i < 30; i++) {
+      c.lineWidth = 0.8 + rnd() * 1.8;
+      let x = rnd() * S, y = rnd() * S;
+      c.beginPath(); c.moveTo(x, y);
+      for (let k2 = 0; k2 < 4; k2++) { x += (rnd() - 0.5) * 70; y += (rnd() - 0.5) * 70; c.lineTo(x, y); }
+      c.stroke();
+    }
+  });
+}
+// 位置配列(非indexed三角形)から「面法線ドミナント軸の平面投影 UV」を作る。scale=1ワールド単位あたりのタイル数。
+function planarUVs(pos, scale) {
+  const uv = new Float32Array((pos.length / 3) * 2);
+  for (let i = 0; i < pos.length; i += 9) {
+    const ax = pos[i], ay = pos[i + 1], az = pos[i + 2];
+    const bx = pos[i + 3], by = pos[i + 4], bz = pos[i + 5];
+    const cx = pos[i + 6], cy = pos[i + 7], cz = pos[i + 8];
+    const ux = bx - ax, uy = by - ay, uz = bz - az;
+    const vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const nx = Math.abs(uy * vz - uz * vy), ny = Math.abs(uz * vx - ux * vz), nz = Math.abs(ux * vy - uy * vx);
+    // ドミナント軸を落として残り2軸を UV に
+    let k0 = 0, k1 = 1;                       // 既定: Z面 → (x,y)
+    if (nx >= ny && nx >= nz) { k0 = 2; k1 = 1; }        // X面 → (z,y)
+    else if (ny >= nx && ny >= nz) { k0 = 0; k1 = 2; }   // Y面 → (x,z)
+    for (let v2 = 0; v2 < 3; v2++) {
+      const px = pos[i + v2 * 3], py = pos[i + v2 * 3 + 1], pz = pos[i + v2 * 3 + 2];
+      const co = [px, py, pz];
+      uv[(i / 3 + v2) * 2] = co[k0] * scale;
+      uv[(i / 3 + v2) * 2 + 1] = co[k1] * scale;
+    }
+  }
+  return uv;
+}
+
+let _metalTex = null;
+function metalTexture() { return _metalTex || (_metalTex = makeMetalTexture()); }
+let _rockTex = null;
+function rockTexture() { return _rockTex || (_rockTex = makeRockTexture()); }
+
 // ---- パーツ形状 → BufferGeometry(非indexed=面ごとに独立頂点でフラットシェーディング) ----
 function partGeometry(part) {
   const V = part.verts;               // pivot 相対のローカル頂点
@@ -64,6 +206,8 @@ function partGeometry(part) {
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  // 機体スケール(全高 ~8 ワールド単位)に合わせ 1 タイル ≈ 1.4 単位 → 胴で 2〜3 パネル
+  g.setAttribute('uv', new THREE.BufferAttribute(planarUVs(pos, 0.7), 2));
   g.computeVertexNormals();           // 非indexed=各三角形が自分の面法線を持つ=フラット
   return g;
 }
@@ -78,8 +222,10 @@ function partMaterial(part) {
     });
   }
   // 金属度は控えめ(env map 無しの金属は暗く潰れる)。拡散反射を残して2灯でも立体が読めるように。
+  // map は白ベースの金属パネル柄 → color 乗算で機体色のまま質感だけ乗る。
   return new THREE.MeshStandardMaterial({
-    color: col, roughness: 0.68, metalness: 0.12, flatShading: true, side: THREE.DoubleSide,
+    color: col, map: metalTexture(),
+    roughness: 0.68, metalness: 0.12, flatShading: true, side: THREE.DoubleSide,
   });
 }
 
@@ -209,13 +355,16 @@ export function createR3DThree(canvas) {
   const sky = new THREE.Mesh(new THREE.SphereGeometry(3000, 24, 16), skyMat);
   scene3.add(sky);
 
-  // --- 地面(接地シャドウの受け手) + グリッド(アリーナ中心まわり) ---
-  const groundMat = new THREE.MeshStandardMaterial({ color: 0x16241d, roughness: 0.98, metalness: 0.0 });
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000), groundMat);
+  // --- 地面(接地シャドウの受け手・テーマ別プロシージャル土テクスチャ) + グリッド ---
+  const GROUND_SIZE = 8000, GROUND_REPEAT = 100;          // 1タイル = 80 ワールド単位
+  const GROUND_TILE = GROUND_SIZE / GROUND_REPEAT;
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.98, metalness: 0.0 });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.set(ARENA_CX, 0, ARENA_CZ);
   ground.receiveShadow = true;
   scene3.add(ground);
+  const groundTexCache = new Map();   // theme -> CanvasTexture(テーマは2種のみ・使い回し)
 
   const grid = new THREE.GridHelper(1200, 24, 0x5a7a86, 0x3a5560);
   grid.position.set(ARENA_CX, 0.03, ARENA_CZ);
@@ -311,7 +460,9 @@ export function createR3DThree(canvas) {
     dg.setAttribute('color', new THREE.Float32BufferAttribute([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 4));
     dg.computeVertexNormals();
     const warm = new THREE.Group();
-    warm.add(new THREE.Mesh(dg, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95, metalness: 0.0, transparent: true, side: THREE.DoubleSide })));
+    dg.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(6), 2));
+    // 障害物の lit 材質と同じ define 構成(USE_MAP+vertexColors)で温める
+    warm.add(new THREE.Mesh(dg, new THREE.MeshStandardMaterial({ vertexColors: true, map: rockTexture(), flatShading: true, roughness: 0.95, metalness: 0.0, transparent: true, side: THREE.DoubleSide })));
     warm.add(new THREE.Mesh(dg.clone(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide })));
     warm.add(new THREE.LineSegments(dg.clone(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true })));
     // スプライトは実使用(マーカー/照準リング/計器枠)と同じ define 構成(map+alphaTest+sizeAttenuation:false)で
@@ -352,8 +503,10 @@ export function createR3DThree(canvas) {
     };
     if (litP.length) {
       const g = mkGeo(litP, litC); g.computeVertexNormals();
+      // 岩肌テクスチャ(白ベース×頂点色の乗算=岩柱は岩色・茨は暗色のまま質感だけ乗る)
+      g.setAttribute('uv', new THREE.BufferAttribute(planarUVs(litP, 0.1), 2));
       const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
-        vertexColors: true, flatShading: true, roughness: 0.95, metalness: 0.0,
+        vertexColors: true, map: rockTexture(), flatShading: true, roughness: 0.95, metalness: 0.0,
         transparent: true, side: THREE.DoubleSide,
       }));
       if (o.kind !== 'mud') { m.castShadow = true; }
@@ -539,7 +692,16 @@ export function createR3DThree(canvas) {
     curTheme = theme;
     skyUni.c0.value.set(theme.sky[0]); skyUni.c1.value.set(theme.sky[1]);
     skyUni.c2.value.set(theme.sky[2]); skyUni.c3.value.set(theme.sky[3]);
-    groundMat.color.set(theme.ground[1]);
+    // 地面はテーマ配色を焼き込んだテクスチャ(material.color は白のまま)
+    let gt = groundTexCache.get(theme);
+    if (!gt) {
+      gt = makeGroundTexture(theme, 0xB0A7E5);
+      gt.repeat.set(GROUND_REPEAT, GROUND_REPEAT);
+      gt.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+      groundTexCache.set(theme, gt);
+    }
+    groundMat.map = gt;
+    groundMat.needsUpdate = true;
     scene3.fog.color.set(theme.ground[0]);
     hemi.color.set(theme.sky[2]); hemi.groundColor.set(theme.ground[2]);
   }
@@ -604,7 +766,8 @@ export function createR3DThree(canvas) {
     // 機体が歩いて移動しても常に足元に地面があり、地面が流れて見える(歩行と地面の連動)。
     const gstep = 1200 / 24;   // GridHelper(1200, 24) のセル間隔=50
     grid.position.set(Math.round(camInfo.target[0] / gstep) * gstep, 0.03, Math.round(camInfo.target[2] / gstep) * gstep);
-    ground.position.set(camInfo.target[0], 0, camInfo.target[2]);
+    // 地面もテクスチャタイル間隔にスナップ(連続追従だと土テクスチャが機体と一緒に流れて見える)
+    ground.position.set(Math.round(camInfo.target[0] / GROUND_TILE) * GROUND_TILE, 0, Math.round(camInfo.target[2] / GROUND_TILE) * GROUND_TILE);
 
     // 太陽(接地シャドウ)を狙点まわりへ追従。方向は r3d.js の LIGHT_KEY 相当(斜め上)。
     const tg = camInfo.target;

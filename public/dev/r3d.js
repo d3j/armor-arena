@@ -152,6 +152,21 @@ function trapBoxZ(cx, cy, cz, hw, hh, hdBot, hdTop) {
   return fixWinding(v, f, [cx, cy, cz]);
 }
 
+// 上下で断面(X/Z半幅)を独立に変えられる箱。裾絞り(ウエスト)/肩張り/装甲ベベルのシルエット用。
+function trapBoxY(cx, cy, cz, hh, hwBot, hdBot, hwTop, hdTop) {
+  const v = [
+    [cx - hwBot, cy - hh, cz - hdBot], [cx + hwBot, cy - hh, cz - hdBot],
+    [cx + hwBot, cy - hh, cz + hdBot], [cx - hwBot, cy - hh, cz + hdBot],
+    [cx - hwTop, cy + hh, cz - hdTop], [cx + hwTop, cy + hh, cz - hdTop],
+    [cx + hwTop, cy + hh, cz + hdTop], [cx - hwTop, cy + hh, cz + hdTop],
+  ];
+  const f = [
+    [0, 1, 2, 3], [4, 5, 6, 7],
+    [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7],
+  ];
+  return fixWinding(v, f, [cx, cy, cz]);
+}
+
 function octaShape(cx, cy, cz, r) {
   const v = [
     [cx + r, cy, cz], [cx - r, cy, cz],
@@ -244,6 +259,77 @@ function findPart(list, id) {
 }
 
 // ==================== mechMesh ====================
+// St3 外装作り込み: パーツ id ごとの固有シルエット(フレーム=胴/頭、脚=同一運動学での肉付け、
+// 武器=得物別レシピ、動力炉=背部ユニット、装甲=増加装甲)。参考にした文法 —
+// メックウォーリア: 重量級の「歩く戦車」感(スラブ装甲・リベット・胴の量感)/
+// アーマード・コア: 軽量機のウエスト絞り・肩ブースタ・センサ形状の記号性/
+// バーチャロン: 発光部と大胆な色面のヒーロー的シルエット。
+// 未知 id は kind/tier の既定形へ落ちる(将来パーツ追記に安全)。
+// IK/歩容/演出の契約は不変: legU/legL/foot/toe/spur の名前と pivot 高さ、role
+// (arm/fist/gunBarrel/muzzle/pod/hilt/blade/drill/drillcasing/rocketFist)、torso 名。
+
+// フレーム: 胴の縦横厚(倍率)+胸部意匠+頭部センサ種。
+const FRAME_STYLES = {
+  fr7: { w: 0.80, h: 0.95, d: 0.75, chest: 'wedge', head: 'mono',  antenna: 1, waist: 1 },
+  fr1: { w: 0.90, h: 1.00, d: 0.85, chest: 'wedge', head: 'visor', antenna: 1, waist: 1 },
+  fr2: { w: 1.00, h: 1.00, d: 1.00, chest: 'duct',  head: 'visor' },
+  fr6: { w: 1.14, h: 0.94, d: 1.10, chest: 'slab',  head: 'mono',  rivets: 1 },
+  fr4: { w: 0.95, h: 1.04, d: 0.90, chest: 'swept', head: 'twin',  antenna: 1, waist: 1 },
+  fr3: { w: 1.22, h: 1.03, d: 1.16, chest: 'layer', head: 'mono',  rivets: 1 },
+  fr8: { w: 0.95, h: 0.96, d: 1.08, chest: 'rack',  head: 'twin' },
+  fr5: { w: 1.30, h: 1.10, d: 1.22, chest: 'layer', head: 'crest', crest: 1 },
+};
+
+// 動力炉: 背部ユニットの型。size は全体倍率(出力由来の finScale に乗算)。
+const GEN_STYLES = {
+  gn1: { kind: 'mini' },
+  gn5: { kind: 'tanks' },
+  gn2: { kind: 'std' },
+  gn6: { kind: 'slim' },
+  gn7: { kind: 'turbine' },
+  gn3: { kind: 'big' },
+  gn4: { kind: 'core' },
+};
+
+// 脚: 同一 kind 内の肉付け差。thigh/shin/foot は断面倍率(pivot 高さは kind 既定を維持し、
+// hipY 指定のみ許す=IK は pivot から導出されるため整合)。
+const LEG_STYLES = {
+  lg1:  { thigh: 0.90, shin: 0.85, foot: 1.00, calfBoost: 1 },
+  lg2:  { thigh: 1.30, shin: 1.25, foot: 1.20, kneePlate: 1 },
+  lg13: { thigh: 1.00, shin: 0.90, foot: 1.05, calfBoost: 1, hipArmor: 1, hipY: 4.25 },
+  lg8:  { thigh: 0.80, shin: 0.75 },
+  lg3:  { thigh: 1.10, shin: 1.05, hipY: 2.4, stanceW: 1.15, fender: 1 },
+  lg14: { thigh: 1.35, shin: 1.25, hipY: 2.8, stanceW: 1.10, hipArmor: 1 },
+  lg12: { thigh: 0.90, shin: 0.85, spurS: 0.80, toeS: 0.90 },
+  lg7:  { thigh: 1.00, shin: 1.00, spurS: 1.35, toeS: 1.15, piston: 1, hipY: 4.3 },
+  lg9:  { treadLen: 0.85, wheels: 3, domed: 1 },
+  lg5:  { treadLen: 1.15, wheels: 5, skirt: 1 },
+  lg11: { spoke: 1, wheelR: 0.95 },
+  lg6:  { fender: 1, wheelR: 1.05 },
+  lg10: { hullLen: 0.80, thrusters: 1 },
+  lg4:  { hullLen: 1.20, thrusters: 2, floats: 1 },
+};
+
+// 武器: id 別レシピ。gun 系は len/rad/muzzle+意匠フラグ、missile 系は pod 寸法+発射管数。
+const WPN_STYLES = {
+  wp1:  { len: 1.15, rad: 0.15, muzzle: 0.14, mag: 1, grip: 1 },
+  wp13: { len: 1.75, rad: 0.11, muzzle: 0.16, mag: 1, scopeBig: 1, brake: 1 },
+  wp8:  { len: 1.00, rad: 0.13, muzzle: 0.15, rotary: 1, ammoBox: 1 },
+  wp17: { len: 1.45, rad: 0.17, muzzle: 0.20, mag: 1, shroud: 1 },
+  wp2:  { len: 1.05, rad: 0.13, muzzle: 0.16, fins: 1 },
+  wp14: { len: 0.55, rad: 0.21, muzzle: 0.30, tank: 1 },
+  wp7:  { len: 1.70, rad: 0.11, muzzle: 0.14, rings: 1, scopeBig: 1 },
+  wp15: { len: 1.10, rad: 0.10, muzzle: 0.13, twin: 1 },
+  wp5:  { len: 0.62, rad: 0.27, muzzle: 0.30, drum: 1 },
+  wp16: { len: 0.80, rad: 0.30, muzzle: 0.36, drum: 1, brake: 1 },
+  wp4:  { len: 1.90, rad: 0.19, muzzle: 0.32, capacitor: 1 },
+  wp12: { podW: 0.26, podH: 0.22, podD: 0.50, tubes: 2 },
+  wp3:  { podW: 0.34, podH: 0.30, podD: 0.60, tubes: 4 },
+  wp18: { podW: 0.44, podH: 0.34, podD: 0.75, tubes: 3 },
+  wp11: { cleaver: 1 },
+  wp9:  { collar: 1 },
+  wp10: { thrustRing: 1 },
+};
 
 export function mechMesh(build, PARTS, color) {
   build = build || {};
@@ -256,83 +342,194 @@ export function mechMesh(build, PARTS, color) {
   const wpnRPart = findPart(PARTS.wpn, build.wpnR);
   const wpnLPart = findPart(PARTS.wpn, build.wpnL);
 
+  const armorPart = findPart(PARTS.armor, build.armor);
   const legsKind = (legsPart && legsPart.kind) || 'biped';
   const tier = (framePart && framePart.tier) || 0;
   const torsoScale = 1 + Math.min(tier, 3) * 0.12;
+  const FS = FRAME_STYLES[build.frame] || {};
+  const GS = GEN_STYLES[build.gen] || {};
+  const LS = LEG_STYLES[build.legs] || {};
+  const WS = (id) => WPN_STYLES[id] || null;
 
   const parts = [];
   let hoverInfo = null;
   let rockInfo = null;
 
-  // --- 胴体 ---
-  const hipY = legsKind === 'quad' ? 2.6
+  // --- 胴体(フレームid別のプロポーション+シルエット) ---
+  let hipY = legsKind === 'quad' ? 2.6
     : legsKind === 'hover' ? 2.1
     : legsKind === 'tank' ? 1.6
     : legsKind === 'wheel' ? 1.9
     : 4.0; // biped / reverse
-  const torsoH = 2.4 * torsoScale;
-  const torsoW = 1.5 * torsoScale;
-  const torsoD = 1.0 * torsoScale;
+  if (LS.hipY) hipY = LS.hipY;
+  const torsoH = 2.4 * torsoScale * (FS.h || 1);
+  const torsoW = 1.5 * torsoScale * (FS.w || 1);
+  const torsoD = 1.0 * torsoScale * (FS.d || 1);
   const torsoCy = hipY + torsoH / 2;
-  parts.push(makePart('torso', [0, torsoCy, 0], boxShape(0, torsoCy, 0, torsoW / 2, torsoH / 2, torsoD / 2), col, {
+  // waist=1(軽量殻)はウエストを絞った逆台形胴(AC系の記号)。それ以外はスラブ胴(MW系の量感)。
+  const torsoShape = FS.waist
+    ? trapBoxY(0, torsoCy, 0, torsoH / 2, torsoW * 0.34, torsoD * 0.36, torsoW / 2, torsoD / 2)
+    : boxShape(0, torsoCy, 0, torsoW / 2, torsoH / 2, torsoD / 2);
+  parts.push(makePart('torso', [0, torsoCy, 0], torsoShape, col, {
     deadAxis: 'x', deadAngle: 0.55,
   }));
 
-  // 胴体ディティール(胸部ダクト/コクピット発光/襟/サイドパネル)。全て torso 子で追従。
+  // 胴体ディティール(胸部意匠はフレームid別/コクピット発光/襟)。全て torso 子で追従。
   const fz0 = torsoD / 2;
-  parts.push(makePart('chestVent', [0, torsoCy + torsoH * 0.06, fz0 + 0.04], boxShape(0, torsoCy + torsoH * 0.06, fz0 + 0.04, torsoW * 0.3, torsoH * 0.16, 0.06), mixColor(col, '#000000', 0.42), { parent: 'torso' }));
+  const darker = (t) => mixColor(col, '#000000', t);
+  const chest = FS.chest || 'duct';
+  if (chest === 'duct') {
+    parts.push(makePart('chestVent', [0, torsoCy + torsoH * 0.06, fz0 + 0.04], boxShape(0, torsoCy + torsoH * 0.06, fz0 + 0.04, torsoW * 0.3, torsoH * 0.16, 0.06), darker(0.42), { parent: 'torso' }));
+  } else if (chest === 'wedge') {
+    // くさび胸(前方へ尖る楔形の主装甲)+胸元スリット
+    parts.push(makePart('chestWedge', [0, torsoCy + torsoH * 0.14, fz0], trapBoxY(0, torsoCy + torsoH * 0.14, fz0, torsoH * 0.2, torsoW * 0.34, 0.2, torsoW * 0.2, 0.06), darker(0.18), { parent: 'torso' }));
+    parts.push(makePart('chestSlit', [0, torsoCy + torsoH * 0.02, fz0 + 0.1], boxShape(0, torsoCy + torsoH * 0.02, fz0 + 0.1, torsoW * 0.22, 0.03, 0.04), darker(0.55), { parent: 'torso' }));
+  } else if (chest === 'slab') {
+    // 一枚板の厚殻+リベット(安い鉄を厚く)
+    parts.push(makePart('chestSlab', [0, torsoCy + torsoH * 0.05, fz0 + 0.08], boxShape(0, torsoCy + torsoH * 0.05, fz0 + 0.08, torsoW * 0.42, torsoH * 0.3, 0.07), darker(0.12), { parent: 'torso' }));
+  } else if (chest === 'swept') {
+    // 前進翼のように左右へ流れる胸装甲(襲撃殻の鋭さ)
+    [1, -1].forEach((s) => {
+      parts.push(makePart(`chestSwept${s}`, [torsoW * 0.22 * s, torsoCy + torsoH * 0.12, fz0 + 0.05], boxShape(torsoW * 0.22 * s, torsoCy + torsoH * 0.12, fz0 + 0.05, torsoW * 0.2, torsoH * 0.1, 0.07), darker(0.2), { parent: 'torso', restAngle: -0.28 * s, restAxis: 'z' }));
+    });
+    parts.push(makePart('chestRidge', [0, torsoCy + torsoH * 0.16, fz0 + 0.09], boxShape(0, torsoCy + torsoH * 0.16, fz0 + 0.09, 0.05, torsoH * 0.16, 0.08), darker(0.35), { parent: 'torso' }));
+  } else if (chest === 'layer') {
+    // 段積みの重装甲(上段が下段に覆い被さる)
+    parts.push(makePart('chestL0', [0, torsoCy - torsoH * 0.06, fz0 + 0.07], boxShape(0, torsoCy - torsoH * 0.06, fz0 + 0.07, torsoW * 0.44, torsoH * 0.2, 0.06), darker(0.16), { parent: 'torso' }));
+    parts.push(makePart('chestL1', [0, torsoCy + torsoH * 0.2, fz0 + 0.12], boxShape(0, torsoCy + torsoH * 0.2, fz0 + 0.12, torsoW * 0.48, torsoH * 0.16, 0.08), darker(0.08), { parent: 'torso' }));
+  } else if (chest === 'rack') {
+    // 換装ラック(骨組みの枠+固定具=積むための殻)
+    [1, -1].forEach((s) => {
+      parts.push(makePart(`rackBar${s}`, [torsoW * 0.3 * s, torsoCy + torsoH * 0.08, fz0 + 0.06], boxShape(torsoW * 0.3 * s, torsoCy + torsoH * 0.08, fz0 + 0.06, 0.05, torsoH * 0.3, 0.05), darker(0.4), { parent: 'torso' }));
+    });
+    parts.push(makePart('rackBeam', [0, torsoCy + torsoH * 0.3, fz0 + 0.06], boxShape(0, torsoCy + torsoH * 0.3, fz0 + 0.06, torsoW * 0.36, 0.05, 0.05), darker(0.4), { parent: 'torso' }));
+  }
   parts.push(makePart('cockpit', [0, torsoCy - torsoH * 0.12, fz0 + 0.05], boxShape(0, torsoCy - torsoH * 0.12, fz0 + 0.05, torsoW * 0.12, 0.06, 0.04), '#ffb04a', { parent: 'torso', emissive: true }));
-  parts.push(makePart('collar', [0, torsoCy + torsoH * 0.44, 0], boxShape(0, torsoCy + torsoH * 0.44, 0, torsoW * 0.54, torsoH * 0.08, torsoD * 0.6), mixColor(col, '#000000', 0.25), { parent: 'torso' }));
-  [1, -1].forEach((s) => {
-    parts.push(makePart(`sidePanel${s}`, [torsoW * 0.5 * s, torsoCy - torsoH * 0.06, 0], boxShape(torsoW * 0.5 * s, torsoCy - torsoH * 0.06, 0, 0.05, torsoH * 0.3, torsoD * 0.34), mixColor(col, '#000000', 0.3), { parent: 'torso' }));
+  parts.push(makePart('collar', [0, torsoCy + torsoH * 0.44, 0], boxShape(0, torsoCy + torsoH * 0.44, 0, torsoW * 0.54, torsoH * 0.08, torsoD * 0.6), darker(0.25), { parent: 'torso' }));
+  if (!FS.waist) [1, -1].forEach((s) => {
+    parts.push(makePart(`sidePanel${s}`, [torsoW * 0.5 * s, torsoCy - torsoH * 0.06, 0], boxShape(torsoW * 0.5 * s, torsoCy - torsoH * 0.06, 0, 0.05, torsoH * 0.3, torsoD * 0.34), darker(0.3), { parent: 'torso' }));
   });
+  if (FS.rivets) {
+    // リベット(厚殻の記号): 胸板の四隅に小さな鋲
+    [[-1, 1], [1, 1], [-1, -1], [1, -1]].forEach(([sx2, sy2], ri) => {
+      const rx = torsoW * 0.36 * sx2, ry = torsoCy + torsoH * (0.05 + 0.24 * sy2), rz = fz0 + 0.13;
+      parts.push(makePart(`rivet${ri}`, [rx, ry, rz], boxShape(rx, ry, rz, 0.035, 0.035, 0.03), darker(0.5), { parent: 'torso' }));
+    });
+  }
 
-  // --- 放熱フィン/バックパック(frame tier + gen出力でボリューム差) ---
+  // --- 増加装甲(armor id 別のオーバーレイ。性能は sim 側、ここは見た目の記号) ---
+  const armorId = (armorPart && armorPart.id) || build.armor;
+  if (armorId === 'ar6') {
+    parts.push(makePart('aSlab', [0, torsoCy - torsoH * 0.02, fz0 + 0.16], boxShape(0, torsoCy - torsoH * 0.02, fz0 + 0.16, torsoW * 0.38, torsoH * 0.26, 0.055), darker(0.34), { parent: 'torso' }));
+  } else if (armorId === 'ar5') {
+    parts.push(makePart('aPad', [0, torsoCy + torsoH * 0.02, fz0 + 0.14], trapBoxY(0, torsoCy + torsoH * 0.02, fz0 + 0.14, torsoH * 0.2, torsoW * 0.36, 0.05, torsoW * 0.28, 0.035), mixColor(col, '#ffffff', 0.16), { parent: 'torso' }));
+  } else if (armorId === 'ar3') {
+    parts.push(makePart('aL0', [0, torsoCy - torsoH * 0.14, fz0 + 0.14], boxShape(0, torsoCy - torsoH * 0.14, fz0 + 0.14, torsoW * 0.4, torsoH * 0.14, 0.05), darker(0.22), { parent: 'torso' }));
+    parts.push(makePart('aL1', [0, torsoCy + torsoH * 0.1, fz0 + 0.18], boxShape(0, torsoCy + torsoH * 0.1, fz0 + 0.18, torsoW * 0.44, torsoH * 0.14, 0.05), darker(0.1), { parent: 'torso' }));
+  } else if (armorId === 'ar4') {
+    // 反応装甲: レンガ状ブロックの貼り付け(ERAの記号)
+    for (let bx2 = -1; bx2 <= 1; bx2++) for (let by2 = 0; by2 <= 1; by2++) {
+      const px = torsoW * 0.26 * bx2, py = torsoCy + torsoH * (by2 ? 0.16 : -0.1), pz = fz0 + 0.12;
+      parts.push(makePart(`aEra${bx2}_${by2}`, [px, py, pz], boxShape(px, py, pz, torsoW * 0.11, torsoH * 0.09, 0.06), darker(0.46), { parent: 'torso' }));
+    }
+  } else if (armorId === 'ar7') {
+    // 流体装甲: 面取りされた滑らかなパック+流路の発光シーム
+    parts.push(makePart('aFluid', [0, torsoCy, fz0 + 0.15], trapBoxY(0, torsoCy, fz0 + 0.15, torsoH * 0.3, torsoW * 0.4, 0.05, torsoW * 0.3, 0.03), mixColor(col, '#bfe8ff', 0.22), { parent: 'torso' }));
+    parts.push(makePart('aSeam', [0, torsoCy, fz0 + 0.21], boxShape(0, torsoCy, fz0 + 0.21, 0.02, torsoH * 0.24, 0.02), '#7fd4ff', { parent: 'torso', emissive: true }));
+  }
+
+  // --- 背部ユニット(動力炉id別)+放熱フィン(出力でボリューム差) ---
   const genRaw = (genPart && (genPart.output != null ? genPart.output : genPart.cap)) || 0;
   const finScale = 1 + Math.max(0, Math.min(1.6, genRaw / 120));
-  const finCount = 2 + Math.min(2, tier);
-  for (let i = 0; i < finCount; i++) {
-    const fz = -torsoD / 2 - 0.05;
-    const fx = (i - (finCount - 1) / 2) * (torsoW * 0.32);
-    const fh = (0.5 + tier * 0.12) * finScale;
-    parts.push(makePart(`fin${i}`, [fx, torsoCy + 0.1, fz], boxShape(fx, torsoCy + 0.1, fz, 0.05, fh / 2, 0.14 * finScale), mixColor(col, '#000000', 0.3), {
-      parent: 'torso',
-    }));
-  }
-  if (tier >= 1) {
-    const bz = -torsoD / 2 - 0.16 * finScale;
-    parts.push(makePart('backpack', [0, torsoCy, bz], boxShape(0, torsoCy, bz, torsoW * 0.38, torsoH * 0.42, 0.16 * finScale), mixColor(col, '#000000', 0.22), {
-      parent: 'torso',
-    }));
+  const bz0 = -torsoD / 2;
+  const gkind = GS.kind || (tier >= 1 ? 'big' : 'std');
+  const addFins = (n, fh) => {
+    for (let i = 0; i < n; i++) {
+      const fx = (i - (n - 1) / 2) * (torsoW * 0.9 / Math.max(2, n));
+      parts.push(makePart(`fin${i}`, [fx, torsoCy + 0.1, bz0 - 0.05], boxShape(fx, torsoCy + 0.1, bz0 - 0.05, 0.05, fh / 2, 0.14 * finScale), darker(0.3), { parent: 'torso' }));
+    }
+  };
+  if (gkind === 'mini') {
+    parts.push(makePart('backpack', [0, torsoCy - torsoH * 0.1, bz0 - 0.12], boxShape(0, torsoCy - torsoH * 0.1, bz0 - 0.12, torsoW * 0.26, torsoH * 0.22, 0.12), darker(0.22), { parent: 'torso' }));
+    parts.push(makePart('genVent', [0, torsoCy + torsoH * 0.08, bz0 - 0.1], octaShape(0, torsoCy + torsoH * 0.08, bz0 - 0.1, 0.09), '#9fe8c0', { parent: 'torso', emissive: true }));
+  } else if (gkind === 'tanks') {
+    [1, -1].forEach((s) => {
+      const tx = torsoW * 0.24 * s, ty = torsoCy + torsoH * 0.02, tz = bz0 - 0.18;
+      parts.push(makePart(`genTank${s}`, [tx, ty, tz], prismShape([tx, ty, tz], AXIS_Y, torsoH * 0.34, 0.13, 0.13, 8), darker(0.18), { parent: 'torso' }));
+    });
+  } else if (gkind === 'slim') {
+    parts.push(makePart('backpack', [0, torsoCy, bz0 - 0.07], boxShape(0, torsoCy, bz0 - 0.07, torsoW * 0.4, torsoH * 0.38, 0.07), darker(0.2), { parent: 'torso' }));
+  } else if (gkind === 'turbine') {
+    // 渦潮炉: 横置きタービン筒+吸気リング
+    const ty = torsoCy + torsoH * 0.06, tz = bz0 - 0.2;
+    parts.push(makePart('genTurb', [0, ty, tz], prismShape([0, ty, tz], AXIS_X, torsoW * 0.4, 0.2, 0.2, 8), darker(0.18), { parent: 'torso' }));
+    [1, -1].forEach((s) => {
+      const rx = torsoW * 0.42 * s;
+      parts.push(makePart(`genIntake${s}`, [rx, ty, tz], prismShape([rx, ty, tz], AXIS_X, 0.03, 0.24, 0.24, 8), darker(0.42), { parent: 'torso' }));
+    });
+  } else if (gkind === 'core') {
+    // 臨界炉: 露出した発光コア+大型フィン(常に沸点)
+    const cy2 = torsoCy + torsoH * 0.04, cz2 = bz0 - 0.22;
+    parts.push(makePart('backpack', [0, cy2, cz2 + 0.08], boxShape(0, cy2, cz2 + 0.08, torsoW * 0.4, torsoH * 0.42, 0.12), darker(0.22), { parent: 'torso' }));
+    parts.push(makePart('genCore', [0, cy2, cz2 - 0.06], octaShape(0, cy2, cz2 - 0.06, 0.22), '#ffd27f', { parent: 'torso', emissive: true }));
+    addFins(4, (0.62 + tier * 0.12) * finScale);
+  } else if (gkind === 'big') {
+    parts.push(makePart('backpack', [0, torsoCy, bz0 - 0.16 * finScale], boxShape(0, torsoCy, bz0 - 0.16 * finScale, torsoW * 0.38, torsoH * 0.42, 0.16 * finScale), darker(0.22), { parent: 'torso' }));
+    addFins(4, (0.5 + tier * 0.12) * finScale);
+  } else {   // std
+    parts.push(makePart('backpack', [0, torsoCy, bz0 - 0.1], boxShape(0, torsoCy, bz0 - 0.1, torsoW * 0.34, torsoH * 0.36, 0.1), darker(0.22), { parent: 'torso' }));
+    addFins(2, (0.5 + tier * 0.12) * finScale);
   }
 
-  // --- 頭部(センサー種を frame id ハッシュで差別化: バイザー/単眼/双眼) ---
+  // --- 頭部(フレームid別のセンサ種: バイザー/単眼/双眼/旗甲クレスト。未知idはハッシュ) ---
   const headY = torsoCy + torsoH / 2 + 0.35;
   parts.push(makePart('head', [0, headY, 0], boxShape(0, headY, 0.05, 0.32, 0.32, 0.32), col, {
     parent: 'torso',
   }));
   const sensorRoll = strHash((build.frame || 'f0') + '::sensor');
-  if (sensorRoll < 0.34) {
-    parts.push(makePart('visor', [0, headY, torsoD * 0.4], boxShape(0, headY, torsoD * 0.4, 0.24, 0.1, 0.06), '#8fffe6', {
+  const headKind = FS.head || (sensorRoll < 0.34 ? 'visor' : sensorRoll < 0.67 ? 'mono' : 'twin');
+  if (headKind === 'visor') {
+    parts.push(makePart('visor', [0, headY, torsoD * 0.4], boxShape(0, headY, torsoD * 0.4, 0.26, 0.09, 0.06), '#8fffe6', {
       parent: 'head', emissive: true,
     }));
-  } else if (sensorRoll < 0.67) {
-    parts.push(makePart('visor', [0, headY, torsoD * 0.42], boxShape(0, headY, torsoD * 0.42, 0.15, 0.15, 0.05), '#ffe08a', {
+  } else if (headKind === 'mono') {
+    parts.push(makePart('visor', [0, headY, torsoD * 0.42], octaShape(0, headY, torsoD * 0.42, 0.13), '#ffe08a', {
       parent: 'head', emissive: true,
     }));
-  } else {
+    parts.push(makePart('brow', [0, headY + 0.16, torsoD * 0.36], boxShape(0, headY + 0.16, torsoD * 0.36, 0.22, 0.05, 0.1), darker(0.3), { parent: 'head' }));
+  } else {   // twin / crest(どちらも双眼)
     [1, -1].forEach((s) => {
       parts.push(makePart(`visor${s}`, [0.12 * s, headY, torsoD * 0.4], boxShape(0.12 * s, headY, torsoD * 0.4, 0.08, 0.08, 0.05), '#8fd0ff', {
         parent: 'head', emissive: true,
       }));
     });
   }
+  if (FS.crest || headKind === 'crest') {
+    // 旗甲のクレスト(縦フィン)+左右の角。ヒーローシルエット(バーチャロン流)。
+    parts.push(makePart('crest', [0, headY + 0.34, 0.02], boxShape(0, headY + 0.34, 0.02, 0.035, 0.24, 0.16), '#d8b24a', { parent: 'head' }));
+    parts.push(makePart('crestGem', [0, headY + 0.22, torsoD * 0.36], boxShape(0, headY + 0.22, torsoD * 0.36, 0.05, 0.05, 0.04), '#ffd27f', { parent: 'head', emissive: true }));
+    [1, -1].forEach((s) => {
+      parts.push(makePart(`horn${s}`, [0.3 * s, headY + 0.2, 0], boxShape(0.3 * s, headY + 0.2, 0, 0.03, 0.2, 0.05), '#d8b24a', {
+        parent: 'head', restAngle: -0.5 * s, restAxis: 'z',
+      }));
+    });
+  }
+  if (FS.antenna) {
+    // 通信アンテナ(軽量・襲撃殻の記号): 頭側面の細い棒+先端灯
+    const ax = -0.26, ay = headY + 0.3;
+    parts.push(makePart('antenna', [ax, ay, -0.06], boxShape(ax, ay, -0.06, 0.018, 0.24, 0.018), darker(0.35), {
+      parent: 'head', restAngle: 0.18, restAxis: 'z',
+    }));
+    parts.push(makePart('antennaTip', [ax, ay + 0.24, -0.06], boxShape(ax, ay + 0.24, -0.06, 0.03, 0.03, 0.03), '#ff8d7a', { parent: 'antenna', emissive: true }));
+  }
 
-  // --- 脚部 ---
+  // --- 脚部(kind の運動学は共通、id で肉付け=LEG_STYLES) ---
   if (legsKind === 'quad') {
     const legY0 = hipY;
     const kneeY = legY0 * 0.5;
-    const xs = [torsoW * 0.55, -torsoW * 0.55];   // xi=0 右 / xi=1 左
+    const tU = LS.thigh || 1, tL = LS.shin || 1;
+    const stw = LS.stanceW || 1;
+    const xs = [torsoW * 0.55 * stw, -torsoW * 0.55 * stw];   // xi=0 右 / xi=1 左
     const zs = [torsoD * 0.9, -torsoD * 0.9];     // zi=0 前 / zi=1 後
     let li = 0;
     for (let zi = 0; zi < zs.length; zi++) {
@@ -342,13 +539,21 @@ export function mechMesh(build, PARTS, color) {
         // 斜対歩(トロット): 対角の脚が同位相で動く(前右+後左 / 前左+後右)。四足動物の速歩。
         // 旧実装は (li%2) で左右同側が同位相=側対歩(ラクダ歩き)になっていた。
         const phase = ((xi + zi) % 2) === 0 ? 0 : Math.PI;
-        parts.push(makePart(`legU${li}`, [xx, legY0, zx], boxShape(xx, (legY0 + kneeY) / 2, zx, 0.16, (legY0 - kneeY) / 2, 0.16), col, {
+        parts.push(makePart(`legU${li}`, [xx, legY0, zx], boxShape(xx, (legY0 + kneeY) / 2, zx, 0.16 * tU, (legY0 - kneeY) / 2, 0.16 * tU), col, {
           swingAxis: 'x', swingAmp: 0.52, swingPhase: phase, deadAxis: 'x', deadAngle: 0.7, leg: 'hip',
         }));
-        parts.push(makePart(`legL${li}`, [xx, kneeY, zx], boxShape(xx, kneeY / 2, zx, 0.13, kneeY / 2, 0.13), col, {
+        parts.push(makePart(`legL${li}`, [xx, kneeY, zx], boxShape(xx, kneeY / 2, zx, 0.13 * tL, kneeY / 2, 0.13 * tL), col, {
           parent: `legU${li}`,
           swingAxis: 'x', swingAmp: 0.46, swingPhase: phase + 0.6, swingClampPositive: true, deadAxis: 'x', deadAngle: -0.5, leg: 'knee',
         }));
+        if (LS.fender) {
+          // 守宮: 腿上のロープロファイルなフェンダー(低い重心の記号)
+          parts.push(makePart(`fender${li}`, [xx, legY0 + 0.12, zx], boxShape(xx, legY0 + 0.12, zx, 0.2 * tU, 0.05, 0.26), darker(0.28), { parent: `legU${li}` }));
+        }
+        if (LS.hipArmor) {
+          // 岩戸: 股関節の装甲キャップ(砲脚の量感)
+          parts.push(makePart(`hipcap${li}`, [xx, legY0, zx], octaShape(xx, legY0, zx, 0.2), darker(0.2), { parent: `legU${li}` }));
+        }
         li++;
       }
     }
@@ -356,34 +561,56 @@ export function mechMesh(build, PARTS, color) {
     // ③ ホバー: 車高を低く、前後に長い低スカート(裾が少し広がる)+基部のアンダーグロー+後方スラスタ。
     //    ホバークラフトのイメージ(背が低く後ろが長い)。脚は持たない。
     hoverInfo = { baseLift: 0.9 * MECH_SCALE, bobAmp: 0.18 * MECH_SCALE };
+    const hl = LS.hullLen || 1;
     const skH = hipY * 0.42;                              // 低い車高
     const skCz = -torsoD * 0.4;                           // 後ろへ寄せる
-    const skLenB = torsoD * 2.0, skLenT = torsoD * 1.6;   // 前後に長い(底が少し長い=裾広がり)
+    const skLenB = torsoD * 2.0 * hl, skLenT = torsoD * 1.6 * hl;   // 前後に長い(底が少し長い=裾広がり)
     const skW = torsoW * 0.95;
     parts.push(makePart('skirt', [0, skH, skCz], trapBoxZ(0, skH, skCz, skW, skH, skLenB, skLenT), mixColor(col, '#20242a', 0.3), {}));
     parts.push(makePart('deck', [0, skH * 2, skCz * 0.4], boxShape(0, skH * 2, skCz * 0.4, skW * 0.82, skH * 0.5, skLenT * 0.7), mixColor(col, '#000000', 0.15), {}));
     parts.push(makePart('underglow', [0, 0.06, skCz], trapBoxZ(0, 0.06, skCz, skW * 1.05, 0.04, skLenB * 1.02, skLenB), '#7fe7ff', { emissive: true }));
-    parts.push(makePart('thruster', [0, skH, skCz - skLenB * 0.5], octaShape(0, skH, skCz - skLenB * 0.5, 0.28), '#bff7ff', { emissive: true }));
+    const thN = LS.thrusters || 1;
+    for (let ti = 0; ti < thN; ti++) {
+      const tx = thN === 1 ? 0 : (ti === 0 ? 1 : -1) * skW * 0.42;
+      parts.push(makePart(`thruster${ti ? ti : ''}`, [tx, skH, skCz - skLenB * 0.5], octaShape(tx, skH, skCz - skLenB * 0.5, thN === 1 ? 0.28 : 0.22), '#bff7ff', { emissive: true }));
+    }
+    if (LS.floats) {
+      // 浮舟: 舷側フロート(船めいた左右の張り出し)
+      [1, -1].forEach((s) => {
+        const fx = skW * 0.95 * s;
+        parts.push(makePart(`float${s}`, [fx, skH * 0.9, skCz], trapBoxZ(fx, skH * 0.9, skCz, 0.14, skH * 0.55, skLenB * 0.6, skLenT * 0.5), darker(0.24), {}));
+      });
+    }
   } else if (legsKind === 'tank') {
     rockInfo = { amp: 0.03, freq: 1.4 };
+    const tl = LS.treadLen || 1;
     const hullY = hipY * 0.6;
-    parts.push(makePart('hull', [0, hullY, 0], boxShape(0, hullY, 0, torsoW * 0.7, hipY * 0.4, torsoD * 1.3), mixColor(col, '#111111', 0.2), {}));
+    parts.push(makePart('hull', [0, hullY, 0], boxShape(0, hullY, 0, torsoW * 0.7, hipY * 0.4, torsoD * 1.3 * tl), mixColor(col, '#111111', 0.2), {}));
+    if (LS.domed) {
+      // 亀甲: 甲羅めいた天板(上へすぼむ台形)
+      parts.push(makePart('dome', [0, hullY + hipY * 0.4, 0], trapBoxY(0, hullY + hipY * 0.4, 0, hipY * 0.14, torsoW * 0.66, torsoD * 1.15 * tl, torsoW * 0.4, torsoD * 0.7 * tl), darker(0.14), { parent: 'hull' }));
+    }
     [1, -1].forEach((side) => {
       const tx = torsoW * 0.75 * side, th = hipY * 0.35;
       // 逆台形の履帯側面(上が前後に長い=実戦車のシルエット)
-      parts.push(makePart(`tread${side}`, [tx, th, 0], trapBoxZ(tx, th, 0, 0.22, th, torsoD * 1.2, torsoD * 1.6), '#1a1a1a', {}));
+      parts.push(makePart(`tread${side}`, [tx, th, 0], trapBoxZ(tx, th, 0, 0.22, th, torsoD * 1.2 * tl, torsoD * 1.6 * tl), '#1a1a1a', {}));
       // 転輪(下部に複数・明色で履帯と差)
       const wr = th * 0.42;
-      for (let wi = 0; wi < 4; wi++) {
-        const wz = -torsoD * 1.0 + wi * (torsoD * 2.0 / 3);
+      const wn = LS.wheels || 4;
+      for (let wi = 0; wi < wn; wi++) {
+        const wz = -torsoD * 1.0 * tl + wi * (torsoD * 2.0 * tl / (wn - 1));
         parts.push(makePart(`roadw${side}_${wi}`, [tx, wr, wz], prismShape([tx, wr, wz], AXIS_X, 0.24, wr, wr, 7), mixColor(col, '#2a2a2a', 0.4), {}));
+      }
+      if (LS.skirt) {
+        // 城塞: 履帯上部を覆うサイドスカート装甲
+        parts.push(makePart(`skirtArm${side}`, [tx, th * 1.7, 0], boxShape(tx, th * 1.7, 0, 0.26, th * 0.5, torsoD * 1.5 * tl), darker(0.16), {}));
       }
     });
   } else if (legsKind === 'wheel') {
     // ④ 二輪(セグウェイ/ボトムズのローラーダッシュ): 大径の同軸2輪でバランス。多輪の履帯的シルエットを
     //    避けて履帯と一目で差別化。前進時は moveLocal の前傾(leanX)でバランサーらしく前のめりになる。
     rockInfo = { amp: 0.02, freq: 2.2 };
-    const wr = hipY * 0.6;                 // 大径ホイール(接地=中心をwrに置き底が地面)
+    const wr = hipY * 0.6 * (LS.wheelR || 1);   // 大径ホイール(接地=中心をwrに置き底が地面)
     const hullY = wr + hipY * 0.2;         // 車体は車軸の上でバランス
     parts.push(makePart('hull', [0, hullY, 0], boxShape(0, hullY, 0, torsoW * 0.55, hipY * 0.3, torsoD * 0.7), mixColor(col, '#111111', 0.18), {}));
     parts.push(makePart('axle', [0, wr, 0], boxShape(0, wr, 0, torsoW * 0.9, 0.08, 0.08), '#222222', {}));
@@ -396,6 +623,19 @@ export function mechMesh(build, PARTS, color) {
       parts.push(makePart(`hub${side}`, [wx, wr, 0], prismShape([wx, wr, 0], AXIS_X, 0.2, wr * 0.34, wr * 0.34, 6), mixColor(col, '#333333', 0.35), {
         spin: { axis: 'x', speed: 3.2 },
       }));
+      if (LS.spoke) {
+        // 風車: 廉価輪の露出スポーク(wheel の子=回転が見える)
+        for (let si2 = 0; si2 < 3; si2++) {
+          const ang = si2 * Math.PI / 3;
+          parts.push(makePart(`spoke${side}_${si2}`, [wx, wr, 0], boxShape(wx, wr, 0, 0.06, wr * 0.86, 0.05), mixColor(col, '#444444', 0.4), {
+            parent: `wheel${side}`, restAngle: ang, restAxis: 'x',
+          }));
+        }
+      }
+      if (LS.fender) {
+        // 疾駆: ホイールを覆う流線フェンダー(hull の子=回転しない)
+        parts.push(makePart(`fenderW${side}`, [wx, wr + wr * 0.7, 0], trapBoxZ(wx, wr + wr * 0.7, 0, 0.2, wr * 0.32, wr * 1.05, wr * 0.75), darker(0.14), { parent: 'hull' }));
+      }
     }
   } else if (legsKind === 'reverse') {
     // ① 逆関節(鳥脚): IKモデルと視覚を一致させる(四脚の toe 方式)。脛(legL)は膝から接地まで届く
@@ -404,45 +644,70 @@ export function mechMesh(build, PARTS, color) {
     //    脛の子の装飾パーツ(IK非関与)。旧実装は足首/足の装飾関節が接地に届かず footContactY=0.88 で
     //    宙に浮いていた(ソフト版は影が無く目立たなかったが Three の接地シャドウで露呈する)。
     const kneeY = hipY * 0.62;
+    const tU = LS.thigh || 1, tL = LS.shin || 1;
+    const spurS = LS.spurS || 1, toeS = LS.toeS || 1;
     [1, -1].forEach((side, li) => {
       const xx = torsoW * 0.3 * side;
       const phase = li === 0 ? 0 : Math.PI;
-      parts.push(makePart(`legU${li}`, [xx, hipY, 0], boxShape(xx, (hipY + kneeY) / 2, 0, 0.19, (hipY - kneeY) / 2, 0.19), col, {
+      parts.push(makePart(`legU${li}`, [xx, hipY, 0], boxShape(xx, (hipY + kneeY) / 2, 0, 0.19 * tU, (hipY - kneeY) / 2, 0.19 * tU), col, {
         swingAxis: 'x', swingAmp: 0.42, swingPhase: phase, deadAxis: 'x', deadAngle: 0.9, leg: 'hip',
       }));
-      parts.push(makePart(`legL${li}`, [xx, kneeY, 0], boxShape(xx, kneeY / 2, 0, 0.15, kneeY / 2, 0.15), col, {
+      parts.push(makePart(`legL${li}`, [xx, kneeY, 0], boxShape(xx, kneeY / 2, 0, 0.15 * tL, kneeY / 2, 0.15 * tL), col, {
         parent: `legU${li}`,
         swingAxis: 'x', swingAmp: 0.5, swingPhase: phase + 0.6, swingClampPositive: true, deadAxis: 'x', deadAngle: -0.9, leg: 'knee',
       }));
       // 踵の距(後方へ張り出す=鳥脚の記号)+爪先プレート(前)。脛の子=IKに追従する装飾。
-      parts.push(makePart(`spur${li}`, [xx, kneeY * 0.32, -0.24], boxShape(xx, kneeY * 0.32, -0.24, 0.11, 0.3, 0.18), mixColor(col, '#111111', 0.3), { parent: `legL${li}` }));
-      parts.push(makePart(`toe${li}`, [xx, 0.12, 0.1], boxShape(xx, 0.12, 0.1, 0.14, 0.12, 0.3), mixColor(col, '#111111', 0.3), { parent: `legL${li}` }));
+      parts.push(makePart(`spur${li}`, [xx, kneeY * 0.32, -0.24], boxShape(xx, kneeY * 0.32, -0.24, 0.11 * spurS, 0.3 * spurS, 0.18 * spurS), mixColor(col, '#111111', 0.3), { parent: `legL${li}` }));
+      parts.push(makePart(`toe${li}`, [xx, 0.12, 0.1], boxShape(xx, 0.12, 0.1, 0.14 * toeS, 0.12, 0.3 * toeS), mixColor(col, '#111111', 0.3), { parent: `legL${li}` }));
+      if (LS.piston) {
+        // 跳兵: 脛裏の跳躍ピストン(バネの記号)
+        parts.push(makePart(`piston${li}`, [xx, kneeY * 0.6, -0.14], prismShape([xx, kneeY * 0.6, -0.14], AXIS_Y, kneeY * 0.3, 0.05, 0.05, 6), mixColor(col, '#8a9096', 0.5), { parent: `legL${li}` }));
+      }
     });
   } else {
     // biped
     const kneeY = hipY * 0.5;
+    const tU = LS.thigh || 1, tL = LS.shin || 1, tF = LS.foot || 1;
     [1, -1].forEach((side, li) => {
       const xx = torsoW * 0.32 * side;
       const phase = li === 0 ? 0 : Math.PI;
-      parts.push(makePart(`legU${li}`, [xx, hipY, 0], boxShape(xx, (hipY + kneeY) / 2, 0, 0.22, (hipY - kneeY) / 2, 0.22), col, {
+      parts.push(makePart(`legU${li}`, [xx, hipY, 0], boxShape(xx, (hipY + kneeY) / 2, 0, 0.22 * tU, (hipY - kneeY) / 2, 0.22 * tU), col, {
         swingAxis: 'x', swingAmp: 0.64, swingPhase: phase, deadAxis: 'x', deadAngle: 0.8, leg: 'hip',
       }));
-      parts.push(makePart(`legL${li}`, [xx, kneeY, 0], boxShape(xx, kneeY / 2, 0, 0.18, kneeY / 2, 0.18), col, {
+      parts.push(makePart(`legL${li}`, [xx, kneeY, 0], boxShape(xx, kneeY / 2, 0, 0.18 * tL, kneeY / 2, 0.18 * tL), col, {
         parent: `legU${li}`,
         swingAxis: 'x', swingAmp: 0.62, swingPhase: phase + 0.7, swingClampPositive: true, deadAxis: 'x', deadAngle: -0.6, leg: 'knee',
       }));
-      parts.push(makePart(`foot${li}`, [xx, 0.1, 0.08], boxShape(xx, 0.1, 0.08, 0.2, 0.1, 0.32), mixColor(col, '#111111', 0.3), {
+      parts.push(makePart(`foot${li}`, [xx, 0.1, 0.08], boxShape(xx, 0.1, 0.08, 0.2 * tF, 0.1, 0.32 * tF), mixColor(col, '#111111', 0.3), {
         parent: `legL${li}`,
         deadAxis: 'x', deadAngle: -0.3,
       }));
+      if (LS.kneePlate) {
+        // 堅牢: 膝前の追加装甲(戦列二脚の記号)
+        parts.push(makePart(`kneep${li}`, [xx, kneeY + 0.06, 0.16 * tL], boxShape(xx, kneeY + 0.06, 0.16 * tL, 0.16 * tL, 0.18, 0.07), darker(0.22), { parent: `legL${li}` }));
+      }
+      if (LS.calfBoost) {
+        // 疾風/野分: ふくらはぎのブースタ(ノズル発光=速さの記号)
+        parts.push(makePart(`calf${li}`, [xx, kneeY * 0.62, -0.16 * tL], boxShape(xx, kneeY * 0.62, -0.16 * tL, 0.1, kneeY * 0.24, 0.09), darker(0.28), { parent: `legL${li}` }));
+        parts.push(makePart(`calfN${li}`, [xx, kneeY * 0.36, -0.2 * tL], boxShape(xx, kneeY * 0.36, -0.2 * tL, 0.05, 0.04, 0.04), '#7fe7ff', { parent: `calf${li}`, emissive: true }));
+      }
     });
+    if (LS.hipArmor) {
+      // 野分: 腰部スカート装甲(torso 子=脚の振りに干渉しない)
+      [1, -1].forEach((s) => {
+        parts.push(makePart(`hipSkirt${s}`, [torsoW * 0.4 * s, hipY + 0.15, 0], trapBoxY(torsoW * 0.4 * s, hipY + 0.15, 0, 0.24, 0.1, 0.2, 0.16, 0.26), darker(0.18), {
+          parent: 'torso', restAngle: -0.16 * s, restAxis: 'z',
+        }));
+      });
+    }
   }
 
-  // --- 腕+武装(両手とも共通の得物ロジック。腕→拳→得物 の階層で連鎖) ---
+  // --- 腕+武装(腕→拳→得物 の階層で連鎖。得物は WPN_STYLES の id 別レシピ) ---
   const shoulderY = torsoCy + torsoH * 0.32;
   const wpns = [{ side: 1, part: wpnRPart }, { side: -1, part: wpnLPart }];
   wpns.forEach(({ side, part }) => {
     const kind = (part && part.kind) || 'rifle';
+    const st = WS(part && part.id) || {};
     const sx = (torsoW / 2 + 0.18) * side;
     const armLen = 1.5;
     const armY0 = shoulderY, armY1 = shoulderY - armLen;
@@ -458,16 +723,35 @@ export function mechMesh(build, PARTS, color) {
     }));
 
     if (kind === 'missile') {
-      parts.push(makePart(`pod${side}`, [sx, shoulderY + 0.35, -0.1], boxShape(sx, shoulderY + 0.35, -0.1, 0.34, 0.3, 0.6), mixColor(col, '#000000', 0.15), {
+      // ポッド寸法+前面の発射管(id 別: 小型=2連 / 標準=4連 / 大蛇=3連大口径)
+      const pw = st.podW || 0.34, ph = st.podH || 0.3, pd = st.podD || 0.6;
+      const py = shoulderY + 0.35, pz = -0.1;
+      const podName = `pod${side}`;
+      parts.push(makePart(podName, [sx, py, pz], boxShape(sx, py, pz, pw, ph, pd), mixColor(col, '#000000', 0.15), {
         parent: armName, role: 'pod', side,
       }));
+      const tubes = st.tubes || 2;
+      const tr = Math.min(0.09, pw * 0.75 / tubes);
+      for (let ti = 0; ti < tubes; ti++) {
+        const tx = sx + (tubes === 1 ? 0 : (ti / (tubes - 1) - 0.5) * (pw * 1.5 - tr * 2));
+        parts.push(makePart(`tube${side}_${ti}`, [tx, py + ph * 0.3, pz + pd], prismShape([tx, py + ph * 0.3, pz + pd], AXIS_Z, 0.05, tr, tr, 6), '#1c2024', { parent: podName }));
+      }
     } else if (kind === 'blade') {
       parts.push(makePart(`hilt${side}`, [sx, handY, 0.15], boxShape(sx, handY, 0.15, 0.13, 0.13, 0.22), mixColor(col, '#000000', 0.2), {
         parent: fistName, role: 'hilt', side,
       }));
-      parts.push(makePart(`blade${side}`, [sx, handY - 0.62, 0.15], boxShape(sx, handY - 0.62, 0.15, 0.035, 0.85, 0.16), '#c8fff0', {
-        parent: `hilt${side}`, emissive: true, role: 'blade', side,
-      }));
+      if (st.cleaver) {
+        // 作業用重刃: 金属の厚刃(非発光)+背の補強リブ。工廠の解体刃。
+        parts.push(makePart(`blade${side}`, [sx, handY - 0.62, 0.15], trapBoxY(sx, handY - 0.62, 0.15, 0.85, 0.05, 0.24, 0.02, 0.1), '#aeb6ba', {
+          parent: `hilt${side}`, role: 'blade', side,
+        }));
+        parts.push(makePart(`bladeRib${side}`, [sx, handY - 0.3, 0.15 - 0.16], boxShape(sx, handY - 0.3, 0.15 - 0.16, 0.06, 0.5, 0.06), mixColor(col, '#000000', 0.3), { parent: `blade${side}` }));
+      } else {
+        // 光刃: 発光する刀身
+        parts.push(makePart(`blade${side}`, [sx, handY - 0.62, 0.15], boxShape(sx, handY - 0.62, 0.15, 0.035, 0.85, 0.16), '#c8fff0', {
+          parent: `hilt${side}`, emissive: true, role: 'blade', side,
+        }));
+      }
     } else if (kind === 'drill') {
       const drillLen = 1.0;
       parts.push(makePart(`drillcasing${side}`, [sx, handY, 0.15], boxShape(sx, handY, 0.15, 0.2, 0.2, 0.3), mixColor(col, '#0a0a0a', 0.3), {
@@ -476,6 +760,10 @@ export function mechMesh(build, PARTS, color) {
       parts.push(makePart(`drillbit${side}`, [sx, handY, 0.15 + drillLen / 2], prismShape([sx, handY, 0.15 + drillLen / 2], AXIS_Z, drillLen / 2, 0, 0.22, 7), mixColor(col, '#111111', 0.1), {
         parent: fistName, spin: { axis: 'z', speed: 2.4 }, role: 'drill', side,
       }));
+      if (st.collar) {
+        // 基部の締め付けカラー(回らない側=ケーシングの子)
+        parts.push(makePart(`drillCol${side}`, [sx, handY, 0.48], prismShape([sx, handY, 0.48], AXIS_Z, 0.04, 0.25, 0.25, 8), mixColor(col, '#333333', 0.4), { parent: `drillcasing${side}` }));
+      }
     } else if (kind === 'rocketpunch') {
       parts.push(makePart(`rpforearm${side}`, [sx, handY, 0.12], boxShape(sx, handY, 0.12, 0.19, 0.22, 0.34), col, {
         parent: fistName, role: 'rocketFist', side,
@@ -483,18 +771,46 @@ export function mechMesh(build, PARTS, color) {
       parts.push(makePart(`rpknuckle${side}`, [sx, handY, 0.42], boxShape(sx, handY, 0.42, 0.2, 0.22, 0.14), mixColor(col, '#000000', 0.1), {
         parent: fistName, role: 'rocketFist', side,
       }));
+      if (st.thrustRing) {
+        // 手首の推進リング(飛んで帰る拳の記号)
+        parts.push(makePart(`rpRing${side}`, [sx, handY, 0.02], prismShape([sx, handY, 0.02], AXIS_Z, 0.03, 0.24, 0.24, 8), mixColor(col, '#333333', 0.4), { parent: fistName, side }));
+      }
     } else {
-      const dims = kind === 'railgun'
-        ? { len: 1.9, rad: 0.19, muzzleSize: 0.32 }
-        : kind === 'shotgun'
-        ? { len: 0.62, rad: 0.27, muzzleSize: 0.3 }
-        : kind === 'beam'
-        ? { len: 1.05, rad: 0.13, muzzleSize: 0.16 }
-        : { len: 1.15, rad: 0.15, muzzleSize: 0.14 }; // rifle(既定)
+      const dims = {
+        len: st.len || (kind === 'railgun' ? 1.9 : kind === 'shotgun' ? 0.62 : kind === 'beam' ? 1.05 : 1.15),
+        rad: st.rad || (kind === 'railgun' ? 0.19 : kind === 'shotgun' ? 0.27 : kind === 'beam' ? 0.13 : 0.15),
+        muzzleSize: st.muzzle || (kind === 'railgun' ? 0.32 : kind === 'shotgun' ? 0.3 : kind === 'beam' ? 0.16 : 0.14),
+      };
       const gunZ = 0.1 + dims.len / 2;
-      parts.push(makePart(`gun${side}`, [sx, handY, gunZ], boxShape(sx, handY, gunZ, dims.rad, dims.rad, dims.len / 2), mixColor(col, '#0a0a0a', 0.35), {
-        parent: fistName, role: 'gunBarrel', side,
-      }));
+      const gunName = `gun${side}`;
+      if (st.twin) {
+        // 双連ビーム: レシーバ+左右2本の細銃身
+        parts.push(makePart(gunName, [sx, handY, gunZ], boxShape(sx, handY, gunZ - dims.len * 0.28, dims.rad * 1.6, dims.rad * 1.2, dims.len * 0.22), mixColor(col, '#0a0a0a', 0.35), {
+          parent: fistName, role: 'gunBarrel', side,
+        }));
+        [1, -1].forEach((bs) => {
+          const bx = sx + dims.rad * 0.85 * bs;
+          parts.push(makePart(`barrel${side}_${bs}`, [bx, handY, gunZ], boxShape(bx, handY, gunZ, dims.rad * 0.55, dims.rad * 0.55, dims.len / 2), mixColor(col, '#0a0a0a', 0.3), { parent: gunName }));
+        });
+      } else if (st.rotary) {
+        // 速射機関砲: レシーバ+回転する3連銃身クラスタ(rotor の子=軸周りに公転)
+        parts.push(makePart(gunName, [sx, handY, gunZ - dims.len * 0.3], boxShape(sx, handY, gunZ - dims.len * 0.3, dims.rad * 1.3, dims.rad * 1.3, dims.len * 0.2), mixColor(col, '#0a0a0a', 0.35), {
+          parent: fistName, role: 'gunBarrel', side,
+        }));
+        const rotName = `rotor${side}`;
+        parts.push(makePart(rotName, [sx, handY, gunZ], prismShape([sx, handY, gunZ], AXIS_Z, dims.len * 0.12, dims.rad * 0.5, dims.rad * 0.5, 6), mixColor(col, '#222222', 0.4), {
+          parent: gunName, spin: { axis: 'z', speed: 5.0 },
+        }));
+        for (let bi = 0; bi < 3; bi++) {
+          const ba = bi * Math.PI * 2 / 3;
+          const bx = sx + Math.cos(ba) * dims.rad * 0.62, by = handY + Math.sin(ba) * dims.rad * 0.62;
+          parts.push(makePart(`barrel${side}_${bi}`, [bx, by, gunZ + dims.len * 0.1], boxShape(bx, by, gunZ + dims.len * 0.1, 0.045, 0.045, dims.len * 0.42), '#141414', { parent: rotName }));
+        }
+      } else {
+        parts.push(makePart(gunName, [sx, handY, gunZ], boxShape(sx, handY, gunZ, dims.rad, dims.rad, dims.len / 2), mixColor(col, '#0a0a0a', 0.35), {
+          parent: fistName, role: 'gunBarrel', side,
+        }));
+      }
       if (kind === 'railgun') {
         [1, -1].forEach((rside) => {
           parts.push(makePart(`rail${side}_${rside}`, [sx, handY + dims.rad * 0.75 * rside, gunZ], boxShape(sx, handY + dims.rad * 0.75 * rside, gunZ, 0.03, 0.03, dims.len / 2 - 0.05), '#bff7ff', {
@@ -505,14 +821,71 @@ export function mechMesh(build, PARTS, color) {
       parts.push(makePart(`muzzle${side}`, [sx, handY, 0.1 + dims.len], boxShape(sx, handY, 0.1 + dims.len, dims.muzzleSize * 0.6, dims.muzzleSize * 0.6, 0.06), kind === 'beam' ? '#bff7ff' : '#8a8a8a', {
         parent: `gun${side}`, emissive: kind === 'beam', role: 'muzzle', side,
       }));
-      // 銃のディティール: スコープ(上)と弾倉(下)。gun 子で発砲リコイルに追従。
-      parts.push(makePart(`scope${side}`, [sx, handY + dims.rad + 0.06, gunZ - dims.len * 0.12], boxShape(sx, handY + dims.rad + 0.06, gunZ - dims.len * 0.12, 0.045, 0.05, dims.len * 0.2), mixColor(col, '#000000', 0.45), { parent: `gun${side}` }));
-      if (kind === 'rifle' || kind === 'railgun' || kind === 'shotgun') {
+      // 銃のディティール(id 別): スコープ/弾倉/前握把/マズルブレーキ/冷却リング/蓄電器/ドラム/タンク等
+      if (st.scopeBig) {
+        const sy2 = handY + dims.rad + 0.1, sz2 = gunZ - dims.len * 0.18;
+        parts.push(makePart(`scope${side}`, [sx, sy2, sz2], prismShape([sx, sy2, sz2], AXIS_Z, dims.len * 0.16, 0.06, 0.06, 6), mixColor(col, '#000000', 0.45), { parent: `gun${side}` }));
+        parts.push(makePart(`lens${side}`, [sx, sy2, sz2 - dims.len * 0.17], boxShape(sx, sy2, sz2 - dims.len * 0.17, 0.04, 0.04, 0.02), '#8fd0ff', { parent: `scope${side}`, emissive: true }));
+      } else if (!st.rotary && !st.tank) {
+        parts.push(makePart(`scope${side}`, [sx, handY + dims.rad + 0.06, gunZ - dims.len * 0.12], boxShape(sx, handY + dims.rad + 0.06, gunZ - dims.len * 0.12, 0.045, 0.05, dims.len * 0.2), mixColor(col, '#000000', 0.45), { parent: `gun${side}` }));
+      }
+      if (st.mag || (!WS(part && part.id) && (kind === 'rifle' || kind === 'railgun' || kind === 'shotgun'))) {
         parts.push(makePart(`mag${side}`, [sx, handY - dims.rad - 0.11, gunZ - dims.len * 0.18], boxShape(sx, handY - dims.rad - 0.11, gunZ - dims.len * 0.18, 0.08, 0.15, 0.09), mixColor(col, '#000000', 0.32), { parent: `gun${side}` }));
       }
+      if (st.grip) {
+        parts.push(makePart(`grip${side}`, [sx, handY - dims.rad - 0.09, gunZ + dims.len * 0.16], boxShape(sx, handY - dims.rad - 0.09, gunZ + dims.len * 0.16, 0.05, 0.11, 0.05), mixColor(col, '#000000', 0.4), { parent: `gun${side}` }));
+      }
+      if (st.brake) {
+        // マズルブレーキ(制退器): 銃口の一回り太い箱
+        parts.push(makePart(`brake${side}`, [sx, handY, 0.1 + dims.len - 0.1], boxShape(sx, handY, 0.1 + dims.len - 0.1, dims.rad * 1.4, dims.rad * 1.4, 0.09), mixColor(col, '#111111', 0.3), { parent: `gun${side}` }));
+      }
+      if (st.shroud) {
+        // 徹甲ライフル: 後半を覆う厚い砲身シュラウド
+        parts.push(makePart(`shroud${side}`, [sx, handY, gunZ - dims.len * 0.16], boxShape(sx, handY, gunZ - dims.len * 0.16, dims.rad * 1.35, dims.rad * 1.35, dims.len * 0.28), mixColor(col, '#0a0a0a', 0.2), { parent: `gun${side}` }));
+      }
+      if (st.rings) {
+        // 狙撃ビーム: 冷却リング×3(長銃身の記号)
+        for (let ri = 0; ri < 3; ri++) {
+          const rz = gunZ + dims.len * (0.02 + ri * 0.14);
+          parts.push(makePart(`ring${side}_${ri}`, [sx, handY, rz], prismShape([sx, handY, rz], AXIS_Z, 0.025, dims.rad + 0.05, dims.rad + 0.05, 8), mixColor(col, '#333333', 0.42), { parent: `gun${side}` }));
+        }
+      }
+      if (st.fins) {
+        // 中距離ビーム: エミッタ左右の放熱フィン
+        [1, -1].forEach((fs2) => {
+          const fx2 = sx + (dims.rad + 0.05) * fs2;
+          parts.push(makePart(`gfin${side}_${fs2}`, [fx2, handY, gunZ + dims.len * 0.1], boxShape(fx2, handY, gunZ + dims.len * 0.1, 0.03, dims.rad * 1.5, dims.len * 0.24), mixColor(col, '#000000', 0.38), { parent: `gun${side}` }));
+        });
+      }
+      if (st.tank) {
+        // 溶断バーナー: 燃料タンク(銃身上の小円筒)+ノズル余熱の発光
+        const ty2 = handY + dims.rad + 0.12;
+        parts.push(makePart(`fuel${side}`, [sx, ty2, gunZ - 0.05], prismShape([sx, ty2, gunZ - 0.05], AXIS_Z, dims.len * 0.3, 0.09, 0.09, 8), mixColor(col, '#000000', 0.3), { parent: `gun${side}` }));
+        parts.push(makePart(`pilot${side}`, [sx, handY, 0.1 + dims.len + 0.05], boxShape(sx, handY, 0.1 + dims.len + 0.05, 0.05, 0.05, 0.03), '#ffb04a', { parent: `gun${side}`, emissive: true }));
+      }
+      if (st.capacitor) {
+        // レールガン: 銃身下の蓄電器ブロック+充電灯
+        parts.push(makePart(`cap${side}`, [sx, handY - dims.rad - 0.14, gunZ - dims.len * 0.22], boxShape(sx, handY - dims.rad - 0.14, gunZ - dims.len * 0.22, 0.12, 0.13, dims.len * 0.2), mixColor(col, '#000000', 0.35), { parent: `gun${side}` }));
+        parts.push(makePart(`capLamp${side}`, [sx, handY - dims.rad - 0.14, gunZ - dims.len * 0.02], boxShape(sx, handY - dims.rad - 0.14, gunZ - dims.len * 0.02, 0.04, 0.04, 0.03), '#bff7ff', { parent: `cap${side}`, emissive: true }));
+      }
+      if (st.drum) {
+        // 散弾系: 銃身下の回転ドラム弾倉
+        const dy2 = handY - dims.rad - 0.12;
+        parts.push(makePart(`drum${side}`, [sx, dy2, gunZ - dims.len * 0.08], prismShape([sx, dy2, gunZ - dims.len * 0.08], AXIS_X, 0.1, 0.14, 0.14, 8), mixColor(col, '#000000', 0.35), { parent: `gun${side}` }));
+      }
+      if (st.ammoBox) {
+        // 機関砲: 給弾ボックス+ベルトの示唆
+        parts.push(makePart(`abox${side}`, [sx, handY - dims.rad - 0.16, gunZ - dims.len * 0.3], boxShape(sx, handY - dims.rad - 0.16, gunZ - dims.len * 0.3, 0.13, 0.15, 0.16), mixColor(col, '#000000', 0.3), { parent: `gun${side}` }));
+      }
     }
-    // 肩アーマー(得物共通。腕に追従)
-    parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.05, 0], boxShape(sx, shoulderY - 0.05, 0, 0.26, 0.16, 0.28), mixColor(col, '#000000', 0.18), { parent: armName }));
+    // 肩アーマー(装甲id別: 鋳鉄/重層=角張った大型 / 繊維/流体=丸パッド / 他=標準)
+    if (armorId === 'ar6' || armorId === 'ar3') {
+      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.02, 0], trapBoxY(sx, shoulderY - 0.02, 0, 0.2, 0.3, 0.32, 0.2, 0.24), mixColor(col, '#000000', 0.24), { parent: armName }));
+    } else if (armorId === 'ar5' || armorId === 'ar7') {
+      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.02, 0], octaShape(sx, shoulderY - 0.02, 0, 0.26), armorId === 'ar7' ? mixColor(col, '#bfe8ff', 0.2) : mixColor(col, '#ffffff', 0.12), { parent: armName }));
+    } else {
+      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.05, 0], boxShape(sx, shoulderY - 0.05, 0, 0.26, 0.16, 0.28), mixColor(col, '#000000', 0.18), { parent: armName }));
+    }
   });
 
   // 親子解決(名前 -> index)
