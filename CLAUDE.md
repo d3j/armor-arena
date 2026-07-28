@@ -3,6 +3,11 @@
 『ARMOR ARENA(鋼機工廠)』の独立リポジトリ。d3j/fable-playground の作品 `kouki` を分離したもの
 (2026-07-25。それ以前の開発履歴は fable-playground 側の git 履歴と `promo/2026-07-05-kouki/making.md` にある)。
 
+**開発の正本はこのリポ(2026-07-28 確定・人間指示)。** fable-playground 側の `/kouki/`・`/kouki-dev/` は
+本リポの公開 URL への転送ページで、以後 playground 側で kouki の改修は行わない。
+タスク追跡は `docs/tasks.md`、検証ハーネスは `tools/harness/`(check-freeze / gait-harness / harness /
+hazard-probe / make-dev / release-sim。使い方は各ファイル冒頭コメント)。
+
 ## 構成と制約
 - `public/` が GitHub Pages の公開ルート(main push で `.github/workflows/pages.yml` が自動デプロイ)。
   サブパス配信(`/armor-arena/`)のためアセット参照は**相対パス**。

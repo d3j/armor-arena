@@ -411,8 +411,7 @@ function previewFx(t) {
   }
   return { attack, hitFx, dodgeFx };
 }
-function previewLoop(now) {
-  requestAnimationFrame(previewLoop);
+function previewTick(now) {
   const c = document.querySelector('.mech-preview');
   if (!c || c.offsetParent === null) return;      // 工廠画面が出ていない間は何もしない
   if (c !== pvCanvas) {                            // renderHangar が作り直したら追従
@@ -444,7 +443,105 @@ function previewLoop(now) {
     camera: { eye: [pvX + Math.cos(camAng) * 7.2, 3.84, pvY + Math.sin(camAng) * 7.2], target: [pvX, 2.46, pvY] },
   }, t);
 }
-requestAnimationFrame(previewLoop);
+// ---- 機体鑑賞(viewer): 工廠の機体を手で動かして眺める ----
+// 入力は ui.viewerInput()(ボタンで選んだ移動/歩調/旋回/カメラ + 単発アクションの待ち行列)。
+// ここが持つのは「時計」だけ: アクションを踏んだ時刻を覚え、r3d の age01(0..1)へ焼き直して scene に載せる。
+// 姿勢/歩容/演出は戦闘とまったく同じ computeMechPose を通る(鑑賞用の別実装を作らない)。sim.js には
+// 触れないので REPLAY_V の互換とは無関係。
+const VW_SPEED = 12;          // 全速の対地速度[m/s](工廠プレビューと同じ見せ場速度)
+const VW_TURN = 1.15;         // 旋回速度[rad/s]
+const VW_DUR = { atk: 0.9, hit: 0.55, dodge: 0.45 };   // 各モーションの尺[s](プレビュー実演と同値)
+const VW_REPEAT_GAP = 0.45;   // くり返し再生の間合い[s]
+const VW_TARGET_Y = 2.46;     // 注視点の高さ(胴のあたり)
+const VW_MOVE_DIR = { stop: [0, 0], fwd: [1, 0], back: [-1, 0], left: [0, -1], right: [0, 1] };  // [fwd, lat] lat:+1=右
+let vwR3d = null, vwCanvas = null, vwMesh = null, vwKey = '', vwCssW = 0, vwCssH = 0;
+let vwX = 500, vwY = 500, vwH = 0, vwWalk = 0, vwLastNow = 0, vwOrbitAz = 38;
+let vwAtk = null, vwHit = null, vwDodge = null;   // 発動時刻 t0 つき(null=未発動/終了済)
+let vwDeadT = null;                               // 撃破した時刻(null=生存)
+let vwLastAct = null, vwActEnd = 0;               // くり返し再生用(最後に押した動作とその終了時刻)
+let vwFocus = [0, 2.46, 0];                       // カメラ狙点の「足元からのオフセット」(撃破時に胴へ降りる)
+
+function vwFire(a, t) {
+  let dur = 0;
+  if (a === 'atkR' || a === 'atkL') {
+    const w = getPart('wpn', a === 'atkR' ? S.current.wpnR : S.current.wpnL);
+    if (!w) return;
+    vwAtk = { kind: w.kind, side: a === 'atkR' ? 'R' : 'L', t0: t }; dur = VW_DUR.atk;
+  } else if (a === 'hit') { vwHit = { t0: t }; dur = VW_DUR.hit; }
+  else if (a === 'dodgeR' || a === 'dodgeL') { vwDodge = { side: a === 'dodgeR' ? 1 : -1, t0: t }; dur = VW_DUR.dodge; }
+  else if (a === 'down') { if (vwDeadT == null) vwDeadT = t; return; }   // 撃破/再起動はくり返し対象外
+  else if (a === 'rise') { vwDeadT = null; return; }
+  else return;
+  vwLastAct = a; vwActEnd = t + dur;
+}
+const vwAge = (fx, dur, t) => { if (!fx) return null; const a = (t - fx.t0) / dur; return a >= 0 && a < 1 ? a : null; };
+
+function viewerTick(now) {
+  const c = document.querySelector('.mech-viewer');
+  if (!c || c.offsetParent === null) return;       // 鑑賞画面が出ていない間は何もしない
+  if (c !== vwCanvas) { vwCanvas = c; vwR3d = makeR3D(c); vwKey = ''; vwCssW = 0; }
+  const rct = c.getBoundingClientRect();
+  if (rct.width > 0 && (rct.width !== vwCssW || rct.height !== vwCssH)) {   // 回転/リサイズ追従
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    vwCssW = rct.width; vwCssH = rct.height;
+    c.width = Math.round(rct.width * dpr); c.height = Math.round(rct.height * dpr);
+  }
+  const key = JSON.stringify([S.current.frame, S.current.legs, S.current.gen, S.current.armor, S.current.wpnR, S.current.wpnL, S.current.color]);
+  if (key !== vwKey) { vwKey = key; try { vwMesh = mechMesh(S.current, PARTS, S.current.color); } catch (e) { vwMesh = null; } }
+  if (!vwMesh) return;
+
+  const v = ui.viewerInput();
+  const t = now / 1000;
+  const dt = vwLastNow ? Math.min(0.1, (now - vwLastNow) / 1000) : 0; vwLastNow = now;
+  while (v.queue.length) vwFire(v.queue.shift(), t);
+  if (v.repeat && vwLastAct && t > vwActEnd + VW_REPEAT_GAP) vwFire(vwLastAct, t);
+  const alive = vwDeadT == null;
+
+  // 移動: ボタンで選んだ向き × 歩調。fwd/lat(機体ローカル -1..1)が対地速度と歩容の両方を決める
+  // (低速ほど歩幅が伸びて重い足取りになる=戦闘と同じ moveLocal 契約)。
+  const dir = VW_MOVE_DIR[v.move] || VW_MOVE_DIR.stop;
+  const sp = alive ? (v.speedMul || 0) : 0;
+  const mv = { fwd: dir[0] * sp, lat: dir[1] * sp, mag: Math.min(1, Math.hypot(dir[0], dir[1]) * sp) };
+  if (alive) vwH += (v.turn || 0) * VW_TURN * dt;
+  const fwdX = Math.cos(vwH), fwdZ = Math.sin(vwH), rgtX = Math.sin(vwH), rgtZ = -Math.cos(vwH);
+  vwX += (fwdX * mv.fwd + rgtX * mv.lat) * VW_SPEED * dt;
+  vwY += (fwdZ * mv.fwd + rgtZ * mv.lat) * VW_SPEED * dt;
+  vwWalk += dt * (mv.mag * 30) * 0.22;   // 非脚パーツ(履帯揺れ等)用
+
+  const aAtk = vwAge(vwAtk, VW_DUR.atk, t), aHit = vwAge(vwHit, VW_DUR.hit, t), aDod = vwAge(vwDodge, VW_DUR.dodge, t);
+  const mech = {
+    mesh: vwMesh, x: vwX, y: vwY, h: vwH, hp: alive ? 999 : 0,
+    alive, deadAge: alive ? 0 : t - vwDeadT, walkPhase: vwWalk, moveLocal: mv,
+    attack: aAtk != null ? { kind: vwAtk.kind, age01: aAtk, side: vwAtk.side } : null,
+    // 被弾は「正面からの着弾」= 押し込みは機体後方へ
+    hitFx: aHit != null ? { age01: aHit, dirX: -fwdX, dirZ: -fwdZ, mag: 0.85 } : null,
+    dodgeFx: aDod != null ? { age01: aDod, side: vwDodge.side } : null
+  };
+
+  // カメラ: 機体の向きを基準にした方位角(0=正面から顔を見る)。自動周回はその方位角を回すだけなので、
+  // 手動へ切り替えた瞬間に画が飛ばない。
+  if (v.cam === 'orbit') vwOrbitAz = (vwOrbitAz + dt * 20) % 360; else vwOrbitAz = v.az || 0;
+  const az = vwOrbitAz * Math.PI / 180, el = (v.el || 0) * Math.PI / 180, dist = v.dist || 7.6;
+  // 狙点は「足元からのオフセット」で持ち、撃破で機体が横倒しになったら mechFocus(倒れた胴中心)へ
+  // ゆっくり降りる。オフセットだけを平滑化するので、歩行中の追従は遅れない。
+  const want = alive ? [0, VW_TARGET_Y, 0]
+    : (function (f) { return [f.x - vwX, f.y + 0.35, f.z - vwY]; })(mechFocus(mech, vwMesh));
+  const k = dt > 0 ? 1 - Math.exp(-dt / 0.28) : 0;
+  for (let i = 0; i < 3; i++) vwFocus[i] += (want[i] - vwFocus[i]) * k;
+  const target = [vwX + vwFocus[0], vwFocus[1], vwY + vwFocus[2]];
+  const rad = dist * Math.cos(el);
+  const eye = [target[0] + Math.cos(vwH + az) * rad, Math.max(0.35, target[1] + dist * Math.sin(el)), target[2] + Math.sin(vwH + az) * rad];
+
+  vwR3d.render({ mechs: [mech], shots: [], blasts: [], camera: { eye, target } }, t);
+}
+
+// 工廠プレビューと機体鑑賞は同じ rAF で回す(表示中の canvas 側だけが描画する)。
+function studioLoop(now) {
+  requestAnimationFrame(studioLoop);
+  previewTick(now);
+  viewerTick(now);
+}
+requestAnimationFrame(studioLoop);
 
 // ---- 戦闘再生 ----
 const els = ui.battleEls();
