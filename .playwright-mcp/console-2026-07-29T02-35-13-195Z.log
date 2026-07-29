@@ -1,2 +1,0 @@
-[      51ms] [WARNING] goatcounter: not counting because of: localhost @ http://gc.zgo.at/count.js:79
-[   23313ms] [WARNING] THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead. @ http://localhost:8765/dev/vendor/three.core.min.js:5
