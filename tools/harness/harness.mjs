@@ -259,7 +259,8 @@ console.log('== 多視点実況(構造検証のみ・内容はOpusレビュー�
   const { narrate } = await import(`${DIR}/voice.js`);
   const ROLES = new Set(Object.keys(VOICE_ROLES).concat([]));
   const PH = /\{(A|B|ME|FOE|WPN|DMG|DIST|HP|FIELD|PART|LEGA|LEGB|WA|WB)\}/g;   // LEGA〜WB=St3 start_build 用
-  let bad = 0, total = 0, tooLong = 0, unknownPh = 0;
+  const BUILD_PH = /\{(LEGA|LEGB|WA|WB)\}/;   // start_build 以外では未解決になるため使用禁止
+  let bad = 0, total = 0, tooLong = 0, unknownPh = 0, buildPhStray = 0;
   for (const [k, roles] of Object.entries(LINES)) {
     for (const [r, arr] of Object.entries(roles)) {
       if (!ROLES.has(r)) { bad++; console.log('  不明role', k, r); }
@@ -268,11 +269,13 @@ console.log('== 多視点実況(構造検証のみ・内容はOpusレビュー�
         if (typeof line !== 'string' || line.length > 60) tooLong++;
         const stray = line.replace(PH, '').match(/\{[A-Z_]+\}/);
         if (stray) { unknownPh++; console.log('  未知プレースホルダ', k, r, stray[0]); }
+        if (k !== 'start_build' && BUILD_PH.test(line)) { buildPhStray++; console.log('  {LEGA}〜{WB}がstart_build外', k, r, line); }
       }
     }
   }
   ok(`セリフ集の構造(総${total}本)`, bad === 0 && unknownPh === 0 && total >= 200);
   ok('行長 ≤ 60字', tooLong === 0, tooLong ? `${tooLong}本超過` : '');
+  ok('{LEGA}〜{WB}は start_build 限定', buildPhStray === 0, buildPhStray ? `${buildPhStray}本違反` : '');
   const r1 = simulate(A.assault, A.heavy, 777, { fieldId: 'sekichu', nameA: 'アルファ', nameB: 'ブラボー' });
   const v1 = narrate(r1, { nameA: 'アルファ', nameB: 'ブラボー', seed: 777, buildA: A.assault, buildB: A.heavy });
   const v2 = narrate(r1, { nameA: 'アルファ', nameB: 'ブラボー', seed: 777, buildA: A.assault, buildB: A.heavy });

@@ -69,9 +69,13 @@
   姿勢は戦闘と同じ computeMechPose。previewLoop→previewTick 化を含む。※未コミットWIPだったものを 2026-07-28 の
   移設コミット(da0eb64)が同梱して公開済み。実機確認=viewer 表示・canvas 描画・console 0(2026-07-28)。
   **人間レビューOK(2026-07-29「動作確認OK」)**。本番昇格は St3 と同時に人間判断で。
-- [ ] **鑑賞モードの構成送りが出撃機体(S.current)を書き換える**(2026-07-28 発見・次セッション送り):
-  ビューアで高額構成に送ると演習が予算超過で出撃不能になる。鑑賞用ビルドを S.current から分離するのが本筋
-  (人間判断 2026-07-29: 次セッションで対応)。
+- [x] **鑑賞モードの構成送りが出撃機体(S.current)を書き換える**(2026-07-28 発見)→
+  **修正済(2026-07-29 public/dev)**: 鑑賞用ビルドを S.current のコピーに分離(ui.js viewerBuild、
+  開くたびに工廠の現構成から作り直し・保存なし・持ち帰りなし。game.js は onDeriveStats=表示専用の
+  ステータス再計算を追加し viewerTick/vwFire はコピーを描画)。実機確認: 鑑賞で予算超過3,450Cに送っても
+  工廠/出撃機体は2,650Cのまま・localStorage 書込ゼロ・console エラー0。harness(dev) ALL GREEN・
+  gait-harness --phys ALL GREEN。ついで掃除: r3d.js GEN_STYLES 残留 size コメント修正・wheels:1 の0除算ガード・
+  harness に「{LEGA}〜{WB}は start_build 限定」チェック追加(緑)。
 - [x] **St3=機体の作り込み**(2026-07-28 public/dev に実装・**人間レビューOK 2026-07-29「動作確認OK」**。
   本番昇格=REPLAY_V 3→4 リリースは別段取り)。参考の文法:
   メックウォーリア=重量級のスラブ装甲/リベット、アーマード・コア=軽量機のウエスト絞り/肩ブースタ/センサ記号、

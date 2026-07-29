@@ -274,6 +274,10 @@ export function createUI(root, hooks) {
   viewerOpenBtn.addEventListener('click', function () {
     // 前回「撃破」のまま倒れている/歩き出したままにしない(開いたら必ず直立・停止から)
     viewerIn.move = 'stop'; viewerIn.turn = 0; viewerIn.queue.push('rise');
+    // 鑑賞用ビルドは開くたびに工廠の現在構成からコピーし直す(前回の構成送りを持ち越さない)
+    var hb = state.lastHangar && state.lastHangar.build;
+    viewerBuild = hb ? JSON.parse(JSON.stringify(hb)) : null;
+    viewerStats = (state.lastHangar && state.lastHangar.stats) || null;
     renderViewer(); ui.showScreen('viewer');
   });
 
@@ -506,6 +510,13 @@ export function createUI(root, hooks) {
     repeat: false,
     queue: []      // 単発アクション(game.js が毎フレーム空にする)
   };
+  /* 鑑賞用ビルドは出撃機体(S.current)の「コピー」。構成送り/カラーはこのコピーだけを書き換え、
+     保存も工廠への反映もしない(高額構成に送ると演習が予算超過で出撃不能になる事故の再発防止)。
+     開くたびに viewerOpenBtn で工廠の現在構成から作り直す。 */
+  var viewerBuild = null, viewerStats = null;
+  function viewerDerive() {
+    if (hooks.onDeriveStats && viewerBuild) viewerStats = hooks.onDeriveStats(viewerBuild);
+  }
 
   var viewerCanvas = h('canvas', { class: 'mech-viewer' });   // 使い回す(WebGLコンテキストを作り直さない)
   var viewerMoveRow = h('div', { class: 'vw-btn-row' });
@@ -564,7 +575,7 @@ export function createUI(root, hooks) {
   }
   function renderViewerActs() {
     var st = state.lastHangar || {};
-    var b = st.build || {};
+    var b = viewerBuild || st.build || {};
     var wpns = (st.parts || {}).wpn || [];
     function wname(id) {
       var p = wpns.filter(function (x) { return x.id === id; })[0];
@@ -589,22 +600,21 @@ export function createUI(root, hooks) {
     ]));
   }
   /* パーツ送り: 増えていくバリエーションを、画面を出たり入ったりせず見比べるための ◀ ▶。
-     選択は工廠と同じ S.current を書き換える(onPartChange 経由で保存される)。 */
+     書き換えるのは鑑賞用コピー(viewerBuild)だけ。出撃機体(S.current)には触れない。 */
   function viewerCycle(catKey, partKey, dir) {
     var st = state.lastHangar;
-    if (!st || !st.build) return;
+    if (!st || !viewerBuild) return;
     var list = (st.parts || {})[partKey] || [];
     if (!list.length) return;
-    var i = list.map(function (p) { return p.id; }).indexOf(st.build[catKey]);
+    var i = list.map(function (p) { return p.id; }).indexOf(viewerBuild[catKey]);
     var n = ((i < 0 ? 0 : i) + dir + list.length) % list.length;
-    st.build[catKey] = list[n].id;
-    var newStats = hooks.onPartChange ? hooks.onPartChange(st.build) : null;
-    if (newStats) st.stats = newStats;
+    viewerBuild[catKey] = list[n].id;
+    viewerDerive();
     renderViewerParts(); renderViewerActs(); renderViewerInfo();
   }
   function renderViewerParts() {
     var st = state.lastHangar || {};
-    var b = st.build || {};
+    var b = viewerBuild || st.build || {};
     mount(viewerPartRows, CATS.map(function (c) {
       var list = (st.parts || {})[c.partKey] || [];
       var cur = list.filter(function (p) { return p.id === b[c.key]; })[0];
@@ -622,10 +632,9 @@ export function createUI(root, hooks) {
         class: 'swatch' + (hex === b.color ? ' selected' : ''),
         style: 'background:' + hex,
         onclick: function () {
-          if (!st.build) return;
-          st.build.color = hex;
-          var newStats = hooks.onPartChange ? hooks.onPartChange(st.build) : null;
-          if (newStats) st.stats = newStats;
+          if (!viewerBuild) return;
+          viewerBuild.color = hex;
+          viewerDerive();
           renderViewerParts();
         }
       }, []);
@@ -633,12 +642,13 @@ export function createUI(root, hooks) {
   }
   function renderViewerInfo() {
     var st = state.lastHangar || {};
-    var stats = st.stats || {};
+    var b = viewerBuild || st.build || null;
+    var stats = viewerStats || st.stats || {};
     var budget = st.budget || 0;
     var cost = stats.cost || 0;
     var over = cost > budget;
     mount(viewerInfo, [
-      h('div', { class: 'vw-info-name' }, [(st.build && st.build.name) || '(無題の鋼機)']),
+      h('div', { class: 'vw-info-name' }, [(b && b.name) || '(無題の鋼機)']),
       h('div', { class: 'muted' }, [
         'HP ' + Math.round(stats.hp || 0) + ' ・ 速度 ' + Math.round(stats.speed || 0) +
         ' ・ 回避 ' + Math.round((stats.evasion || 0) * 100) + '%' +
@@ -681,8 +691,7 @@ export function createUI(root, hooks) {
     h('h2', { class: 'screen-title' }, ['機体鑑賞 — MECH VIEWER',
       h('a', { class: 'link', href: '#', onclick: function (e) {
         e.preventDefault();
-        renderStatsPanel(); renderCardList(); renderColorRow();   // 鑑賞中に替えた構成を工廠へ戻す
-        ui.showScreen('hangar');
+        ui.showScreen('hangar');   // 鑑賞用コピーは持ち帰らない(工廠と出撃機体はそのまま)
       } }, ['← 工廠へ'])]),
     h('div', { class: 'viewer-layout row' }, [
       h('div', { class: 'viewer-stage' }, [viewerCanvas]),
@@ -979,6 +988,9 @@ export function createUI(root, hooks) {
     /* 機体鑑賞の入力状態(移動/歩調/旋回/カメラ/単発アクション待ち行列)。
        game.js の viewerTick が毎フレーム読み、queue は読んだ側が空にする。 */
     viewerInput: function () { return viewerIn; },
+
+    /* 鑑賞中の表示対象ビルド(S.current から分離したコピー)。未オープン時は null。 */
+    viewerBuild: function () { return viewerBuild; },
 
     renderCampaign: function (st) {
       st = st || {};

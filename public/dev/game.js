@@ -213,6 +213,7 @@ function ambientStop() {
 // ---- UI ----
 const ui = createUI(document.getElementById('app'), {
   onPartChange(build) { S.current = build; save(); return deriveStats(build); },
+  onDeriveStats(build) { return deriveStats(build); },   // 鑑賞用コピーの表示専用(S.current に触れず保存もしない)
   onSaveBuild(build, slot) {
     S.slots[slot] = { build: JSON.parse(JSON.stringify(build)), cloud: false }; save();
     if (user && api) {
@@ -461,10 +462,10 @@ let vwDeadT = null;                               // 撃破した時刻(null=生
 let vwLastAct = null, vwActEnd = 0;               // くり返し再生用(最後に押した動作とその終了時刻)
 let vwFocus = [0, 2.46, 0];                       // カメラ狙点の「足元からのオフセット」(撃破時に胴へ降りる)
 
-function vwFire(a, t) {
+function vwFire(a, t, build) {
   let dur = 0;
   if (a === 'atkR' || a === 'atkL') {
-    const w = getPart('wpn', a === 'atkR' ? S.current.wpnR : S.current.wpnL);
+    const w = getPart('wpn', a === 'atkR' ? build.wpnR : build.wpnL);
     if (!w) return;
     vwAtk = { kind: w.kind, side: a === 'atkR' ? 'R' : 'L', t0: t }; dur = VW_DUR.atk;
   } else if (a === 'hit') { vwHit = { t0: t }; dur = VW_DUR.hit; }
@@ -486,15 +487,17 @@ function viewerTick(now) {
     vwCssW = rct.width; vwCssH = rct.height;
     c.width = Math.round(rct.width * dpr); c.height = Math.round(rct.height * dpr);
   }
-  const key = JSON.stringify([S.current.frame, S.current.legs, S.current.gen, S.current.armor, S.current.wpnR, S.current.wpnL, S.current.color]);
-  if (key !== vwKey) { vwKey = key; try { vwMesh = mechMesh(S.current, PARTS, S.current.color); } catch (e) { vwMesh = null; } }
+  // 描画対象は鑑賞用コピー(ui.viewerBuild)。出撃機体(S.current)は鑑賞では書き換わらない。
+  const build = (ui.viewerBuild && ui.viewerBuild()) || S.current;
+  const key = JSON.stringify([build.frame, build.legs, build.gen, build.armor, build.wpnR, build.wpnL, build.color]);
+  if (key !== vwKey) { vwKey = key; try { vwMesh = mechMesh(build, PARTS, build.color); } catch (e) { vwMesh = null; } }
   if (!vwMesh) return;
 
   const v = ui.viewerInput();
   const t = now / 1000;
   const dt = vwLastNow ? Math.min(0.1, (now - vwLastNow) / 1000) : 0; vwLastNow = now;
-  while (v.queue.length) vwFire(v.queue.shift(), t);
-  if (v.repeat && vwLastAct && t > vwActEnd + VW_REPEAT_GAP) vwFire(vwLastAct, t);
+  while (v.queue.length) vwFire(v.queue.shift(), t, build);
+  if (v.repeat && vwLastAct && t > vwActEnd + VW_REPEAT_GAP) vwFire(vwLastAct, t, build);
   const alive = vwDeadT == null;
 
   // 移動: ボタンで選んだ向き × 歩調。fwd/lat(機体ローカル -1..1)が対地速度と歩容の両方を決める

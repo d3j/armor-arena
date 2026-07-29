@@ -280,7 +280,7 @@ const FRAME_STYLES = {
   fr5: { w: 1.30, h: 1.10, d: 1.22, chest: 'layer', head: 'crest', crest: 1 },
 };
 
-// 動力炉: 背部ユニットの型。size は全体倍率(出力由来の finScale に乗算)。
+// 動力炉: 背部ユニットの型(大きさは出力由来の finScale が決める)。
 const GEN_STYLES = {
   gn1: { kind: 'mini' },
   gn5: { kind: 'tanks' },
@@ -598,7 +598,8 @@ export function mechMesh(build, PARTS, color) {
       const wr = th * 0.42;
       const wn = LS.wheels || 4;
       for (let wi = 0; wi < wn; wi++) {
-        const wz = -torsoD * 1.0 * tl + wi * (torsoD * 2.0 * tl / (wn - 1));
+        // wheels:1 でも 0 除算にしない(1個なら中央)
+        const wz = wn > 1 ? -torsoD * 1.0 * tl + wi * (torsoD * 2.0 * tl / (wn - 1)) : 0;
         parts.push(makePart(`roadw${side}_${wi}`, [tx, wr, wz], prismShape([tx, wr, wz], AXIS_X, 0.24, wr, wr, 7), mixColor(col, '#2a2a2a', 0.4), {}));
       }
       if (LS.skirt) {
