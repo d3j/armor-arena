@@ -32,7 +32,7 @@
 //    スクリプトはともに promo/2026-07-05-kouki/_work/。
 // ─────────────────────────────────────────────────────────────────
 
-export const REPLAY_V = 3;   // 挙動版。シム挙動を変えたら +1(掟3)
+export const REPLAY_V = 4;   // 挙動版。シム挙動を変えたら +1(掟3)
 
 // 戦場のビット表現(FIELD_CODES のインデックス)。追記専用(掟2)。
 export const FIELD_CODES = ['plain', 'sekichu', 'deitan', 'crater', 'haikyo', 'ibara'];

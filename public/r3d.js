@@ -1,7 +1,7 @@
 // r3d.js — 自前ソフトウェア3D(ワイヤーフレーム+フラットシェード) pure ESM・DOM非依存
 // 契約:
 //   export function mechMesh(build, PARTS, color) -> mesh (内部形式・opaque)
-//   export function createR3D(canvas) -> { render(scene, tSec) }
+//   (観戦3Dの描画は r3d-three.js の createR3DThree(canvas) -> { render }。旧ソフト版 createR3D は撤去済)
 //   scene = { mechs:[{mesh,x,y,h,hp,alive,walkPhase,attack,moveLocal?}], shots:[...], blasts:[...],
 //   moveLocal = {fwd,lat,mag}  … 機体ローカルの移動速度(前後/横, 各-1..1目安)。脚の前後/横ステップと
 //                                体幹リーンを移動方向へ合わせる(省略時は「前進歩行」にフォールバック)。
@@ -27,6 +27,7 @@ const GAIT_PLANT_AHEAD = 0.30;   // 接地点を股の前方どれだけに置�
 const GAIT_LIFT = 0.30;          // 遊脚の持ち上げ高さ(脚長比)
 const GAIT_SLOW_STRIDE = 0.60;   // 低速時に歩幅を伸ばす係数(2乗カーブ。mag→0で+60%=大股のゆっくりした重い足取り)
 const GAIT_SLOW_DUTY = 0.14;     // 低速時に接地デューティを伸ばす量(2乗カーブ。接地時間が長い=どっしり)
+const REV_BEND = 0.10;           // 逆関節の常時屈み(脚長比)。膝の後折れが常に見える=鳥脚のシルエット
 // ↑2乗カーブの理由: 中速域(旋回歩行 mag≈0.6 等)に効かせると、長い接地の間に機体の向きが回り込み
 //   world固定の接地足がIK到達限界に当たる(plantError悪化)。低域だけ強く効かせる。
 
@@ -151,6 +152,21 @@ function trapBoxZ(cx, cy, cz, hw, hh, hdBot, hdTop) {
   return fixWinding(v, f, [cx, cy, cz]);
 }
 
+// 上下で断面(X/Z半幅)を独立に変えられる箱。裾絞り(ウエスト)/肩張り/装甲ベベルのシルエット用。
+function trapBoxY(cx, cy, cz, hh, hwBot, hdBot, hwTop, hdTop) {
+  const v = [
+    [cx - hwBot, cy - hh, cz - hdBot], [cx + hwBot, cy - hh, cz - hdBot],
+    [cx + hwBot, cy - hh, cz + hdBot], [cx - hwBot, cy - hh, cz + hdBot],
+    [cx - hwTop, cy + hh, cz - hdTop], [cx + hwTop, cy + hh, cz - hdTop],
+    [cx + hwTop, cy + hh, cz + hdTop], [cx - hwTop, cy + hh, cz + hdTop],
+  ];
+  const f = [
+    [0, 1, 2, 3], [4, 5, 6, 7],
+    [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7],
+  ];
+  return fixWinding(v, f, [cx, cy, cz]);
+}
+
 function octaShape(cx, cy, cz, r) {
   const v = [
     [cx + r, cy, cz], [cx - r, cy, cz],
@@ -243,6 +259,77 @@ function findPart(list, id) {
 }
 
 // ==================== mechMesh ====================
+// St3 外装作り込み: パーツ id ごとの固有シルエット(フレーム=胴/頭、脚=同一運動学での肉付け、
+// 武器=得物別レシピ、動力炉=背部ユニット、装甲=増加装甲)。参考にした文法 —
+// メックウォーリア: 重量級の「歩く戦車」感(スラブ装甲・リベット・胴の量感)/
+// アーマード・コア: 軽量機のウエスト絞り・肩ブースタ・センサ形状の記号性/
+// バーチャロン: 発光部と大胆な色面のヒーロー的シルエット。
+// 未知 id は kind/tier の既定形へ落ちる(将来パーツ追記に安全)。
+// IK/歩容/演出の契約は不変: legU/legL/foot/toe/spur の名前と pivot 高さ、role
+// (arm/fist/gunBarrel/muzzle/pod/hilt/blade/drill/drillcasing/rocketFist)、torso 名。
+
+// フレーム: 胴の縦横厚(倍率)+胸部意匠+頭部センサ種。
+const FRAME_STYLES = {
+  fr7: { w: 0.80, h: 0.95, d: 0.75, chest: 'wedge', head: 'mono',  antenna: 1, waist: 1 },
+  fr1: { w: 0.90, h: 1.00, d: 0.85, chest: 'wedge', head: 'visor', antenna: 1, waist: 1 },
+  fr2: { w: 1.00, h: 1.00, d: 1.00, chest: 'duct',  head: 'visor' },
+  fr6: { w: 1.14, h: 0.94, d: 1.10, chest: 'slab',  head: 'mono',  rivets: 1 },
+  fr4: { w: 0.95, h: 1.04, d: 0.90, chest: 'swept', head: 'twin',  antenna: 1, waist: 1 },
+  fr3: { w: 1.22, h: 1.03, d: 1.16, chest: 'layer', head: 'mono',  rivets: 1 },
+  fr8: { w: 0.95, h: 0.96, d: 1.08, chest: 'rack',  head: 'twin' },
+  fr5: { w: 1.30, h: 1.10, d: 1.22, chest: 'layer', head: 'crest', crest: 1 },
+};
+
+// 動力炉: 背部ユニットの型(大きさは出力由来の finScale が決める)。
+const GEN_STYLES = {
+  gn1: { kind: 'mini' },
+  gn5: { kind: 'tanks' },
+  gn2: { kind: 'std' },
+  gn6: { kind: 'slim' },
+  gn7: { kind: 'turbine' },
+  gn3: { kind: 'big' },
+  gn4: { kind: 'core' },
+};
+
+// 脚: 同一 kind 内の肉付け差。thigh/shin/foot は断面倍率(pivot 高さは kind 既定を維持し、
+// hipY 指定のみ許す=IK は pivot から導出されるため整合)。
+const LEG_STYLES = {
+  lg1:  { thigh: 0.90, shin: 0.85, foot: 1.00, calfBoost: 1 },
+  lg2:  { thigh: 1.30, shin: 1.25, foot: 1.20, kneePlate: 1 },
+  lg13: { thigh: 1.00, shin: 0.90, foot: 1.05, calfBoost: 1, hipArmor: 1, hipY: 4.25 },
+  lg8:  { thigh: 0.80, shin: 0.75 },
+  lg3:  { thigh: 1.10, shin: 1.05, hipY: 2.4, stanceW: 1.15, fender: 1 },
+  lg14: { thigh: 1.35, shin: 1.25, hipY: 2.8, stanceW: 1.10, hipArmor: 1 },
+  lg12: { thigh: 0.90, shin: 0.85, spurS: 0.80, toeS: 0.90 },
+  lg7:  { thigh: 1.00, shin: 1.00, spurS: 1.35, toeS: 1.15, piston: 1, hipY: 4.3 },
+  lg9:  { treadLen: 0.85, wheels: 3, domed: 1 },
+  lg5:  { treadLen: 1.15, wheels: 5, skirt: 1 },
+  lg11: { spoke: 1, wheelR: 0.95 },
+  lg6:  { fender: 1, wheelR: 1.05 },
+  lg10: { hullLen: 0.80, thrusters: 1 },
+  lg4:  { hullLen: 1.20, thrusters: 2, floats: 1 },
+};
+
+// 武器: id 別レシピ。gun 系は len/rad/muzzle+意匠フラグ、missile 系は pod 寸法+発射管数。
+const WPN_STYLES = {
+  wp1:  { len: 1.15, rad: 0.15, muzzle: 0.14, mag: 1, grip: 1 },
+  wp13: { len: 1.75, rad: 0.11, muzzle: 0.16, mag: 1, scopeBig: 1, brake: 1 },
+  wp8:  { len: 1.00, rad: 0.13, muzzle: 0.15, rotary: 1, ammoBox: 1 },
+  wp17: { len: 1.45, rad: 0.17, muzzle: 0.20, mag: 1, shroud: 1 },
+  wp2:  { len: 1.05, rad: 0.13, muzzle: 0.16, fins: 1 },
+  wp14: { len: 0.55, rad: 0.21, muzzle: 0.30, tank: 1 },
+  wp7:  { len: 1.70, rad: 0.11, muzzle: 0.14, rings: 1, scopeBig: 1 },
+  wp15: { len: 1.10, rad: 0.10, muzzle: 0.13, twin: 1 },
+  wp5:  { len: 0.62, rad: 0.27, muzzle: 0.30, drum: 1 },
+  wp16: { len: 0.80, rad: 0.30, muzzle: 0.36, drum: 1, brake: 1 },
+  wp4:  { len: 1.90, rad: 0.19, muzzle: 0.32, capacitor: 1 },
+  wp12: { podW: 0.26, podH: 0.22, podD: 0.50, tubes: 2 },
+  wp3:  { podW: 0.34, podH: 0.30, podD: 0.60, tubes: 4 },
+  wp18: { podW: 0.44, podH: 0.34, podD: 0.75, tubes: 3 },
+  wp11: { cleaver: 1 },
+  wp9:  { collar: 1 },
+  wp10: { thrustRing: 1 },
+};
 
 export function mechMesh(build, PARTS, color) {
   build = build || {};
@@ -255,83 +342,194 @@ export function mechMesh(build, PARTS, color) {
   const wpnRPart = findPart(PARTS.wpn, build.wpnR);
   const wpnLPart = findPart(PARTS.wpn, build.wpnL);
 
+  const armorPart = findPart(PARTS.armor, build.armor);
   const legsKind = (legsPart && legsPart.kind) || 'biped';
   const tier = (framePart && framePart.tier) || 0;
   const torsoScale = 1 + Math.min(tier, 3) * 0.12;
+  const FS = FRAME_STYLES[build.frame] || {};
+  const GS = GEN_STYLES[build.gen] || {};
+  const LS = LEG_STYLES[build.legs] || {};
+  const WS = (id) => WPN_STYLES[id] || null;
 
   const parts = [];
   let hoverInfo = null;
   let rockInfo = null;
 
-  // --- 胴体 ---
-  const hipY = legsKind === 'quad' ? 2.6
+  // --- 胴体(フレームid別のプロポーション+シルエット) ---
+  let hipY = legsKind === 'quad' ? 2.6
     : legsKind === 'hover' ? 2.1
     : legsKind === 'tank' ? 1.6
     : legsKind === 'wheel' ? 1.9
     : 4.0; // biped / reverse
-  const torsoH = 2.4 * torsoScale;
-  const torsoW = 1.5 * torsoScale;
-  const torsoD = 1.0 * torsoScale;
+  if (LS.hipY) hipY = LS.hipY;
+  const torsoH = 2.4 * torsoScale * (FS.h || 1);
+  const torsoW = 1.5 * torsoScale * (FS.w || 1);
+  const torsoD = 1.0 * torsoScale * (FS.d || 1);
   const torsoCy = hipY + torsoH / 2;
-  parts.push(makePart('torso', [0, torsoCy, 0], boxShape(0, torsoCy, 0, torsoW / 2, torsoH / 2, torsoD / 2), col, {
+  // waist=1(軽量殻)はウエストを絞った逆台形胴(AC系の記号)。それ以外はスラブ胴(MW系の量感)。
+  const torsoShape = FS.waist
+    ? trapBoxY(0, torsoCy, 0, torsoH / 2, torsoW * 0.34, torsoD * 0.36, torsoW / 2, torsoD / 2)
+    : boxShape(0, torsoCy, 0, torsoW / 2, torsoH / 2, torsoD / 2);
+  parts.push(makePart('torso', [0, torsoCy, 0], torsoShape, col, {
     deadAxis: 'x', deadAngle: 0.55,
   }));
 
-  // 胴体ディティール(胸部ダクト/コクピット発光/襟/サイドパネル)。全て torso 子で追従。
+  // 胴体ディティール(胸部意匠はフレームid別/コクピット発光/襟)。全て torso 子で追従。
   const fz0 = torsoD / 2;
-  parts.push(makePart('chestVent', [0, torsoCy + torsoH * 0.06, fz0 + 0.04], boxShape(0, torsoCy + torsoH * 0.06, fz0 + 0.04, torsoW * 0.3, torsoH * 0.16, 0.06), mixColor(col, '#000000', 0.42), { parent: 'torso' }));
+  const darker = (t) => mixColor(col, '#000000', t);
+  const chest = FS.chest || 'duct';
+  if (chest === 'duct') {
+    parts.push(makePart('chestVent', [0, torsoCy + torsoH * 0.06, fz0 + 0.04], boxShape(0, torsoCy + torsoH * 0.06, fz0 + 0.04, torsoW * 0.3, torsoH * 0.16, 0.06), darker(0.42), { parent: 'torso' }));
+  } else if (chest === 'wedge') {
+    // くさび胸(前方へ尖る楔形の主装甲)+胸元スリット
+    parts.push(makePart('chestWedge', [0, torsoCy + torsoH * 0.14, fz0], trapBoxY(0, torsoCy + torsoH * 0.14, fz0, torsoH * 0.2, torsoW * 0.34, 0.2, torsoW * 0.2, 0.06), darker(0.18), { parent: 'torso' }));
+    parts.push(makePart('chestSlit', [0, torsoCy + torsoH * 0.02, fz0 + 0.1], boxShape(0, torsoCy + torsoH * 0.02, fz0 + 0.1, torsoW * 0.22, 0.03, 0.04), darker(0.55), { parent: 'torso' }));
+  } else if (chest === 'slab') {
+    // 一枚板の厚殻+リベット(安い鉄を厚く)
+    parts.push(makePart('chestSlab', [0, torsoCy + torsoH * 0.05, fz0 + 0.08], boxShape(0, torsoCy + torsoH * 0.05, fz0 + 0.08, torsoW * 0.42, torsoH * 0.3, 0.07), darker(0.12), { parent: 'torso' }));
+  } else if (chest === 'swept') {
+    // 前進翼のように左右へ流れる胸装甲(襲撃殻の鋭さ)
+    [1, -1].forEach((s) => {
+      parts.push(makePart(`chestSwept${s}`, [torsoW * 0.22 * s, torsoCy + torsoH * 0.12, fz0 + 0.05], boxShape(torsoW * 0.22 * s, torsoCy + torsoH * 0.12, fz0 + 0.05, torsoW * 0.2, torsoH * 0.1, 0.07), darker(0.2), { parent: 'torso', restAngle: -0.28 * s, restAxis: 'z' }));
+    });
+    parts.push(makePart('chestRidge', [0, torsoCy + torsoH * 0.16, fz0 + 0.09], boxShape(0, torsoCy + torsoH * 0.16, fz0 + 0.09, 0.05, torsoH * 0.16, 0.08), darker(0.35), { parent: 'torso' }));
+  } else if (chest === 'layer') {
+    // 段積みの重装甲(上段が下段に覆い被さる)
+    parts.push(makePart('chestL0', [0, torsoCy - torsoH * 0.06, fz0 + 0.07], boxShape(0, torsoCy - torsoH * 0.06, fz0 + 0.07, torsoW * 0.44, torsoH * 0.2, 0.06), darker(0.16), { parent: 'torso' }));
+    parts.push(makePart('chestL1', [0, torsoCy + torsoH * 0.2, fz0 + 0.12], boxShape(0, torsoCy + torsoH * 0.2, fz0 + 0.12, torsoW * 0.48, torsoH * 0.16, 0.08), darker(0.08), { parent: 'torso' }));
+  } else if (chest === 'rack') {
+    // 換装ラック(骨組みの枠+固定具=積むための殻)
+    [1, -1].forEach((s) => {
+      parts.push(makePart(`rackBar${s}`, [torsoW * 0.3 * s, torsoCy + torsoH * 0.08, fz0 + 0.06], boxShape(torsoW * 0.3 * s, torsoCy + torsoH * 0.08, fz0 + 0.06, 0.05, torsoH * 0.3, 0.05), darker(0.4), { parent: 'torso' }));
+    });
+    parts.push(makePart('rackBeam', [0, torsoCy + torsoH * 0.3, fz0 + 0.06], boxShape(0, torsoCy + torsoH * 0.3, fz0 + 0.06, torsoW * 0.36, 0.05, 0.05), darker(0.4), { parent: 'torso' }));
+  }
   parts.push(makePart('cockpit', [0, torsoCy - torsoH * 0.12, fz0 + 0.05], boxShape(0, torsoCy - torsoH * 0.12, fz0 + 0.05, torsoW * 0.12, 0.06, 0.04), '#ffb04a', { parent: 'torso', emissive: true }));
-  parts.push(makePart('collar', [0, torsoCy + torsoH * 0.44, 0], boxShape(0, torsoCy + torsoH * 0.44, 0, torsoW * 0.54, torsoH * 0.08, torsoD * 0.6), mixColor(col, '#000000', 0.25), { parent: 'torso' }));
-  [1, -1].forEach((s) => {
-    parts.push(makePart(`sidePanel${s}`, [torsoW * 0.5 * s, torsoCy - torsoH * 0.06, 0], boxShape(torsoW * 0.5 * s, torsoCy - torsoH * 0.06, 0, 0.05, torsoH * 0.3, torsoD * 0.34), mixColor(col, '#000000', 0.3), { parent: 'torso' }));
+  parts.push(makePart('collar', [0, torsoCy + torsoH * 0.44, 0], boxShape(0, torsoCy + torsoH * 0.44, 0, torsoW * 0.54, torsoH * 0.08, torsoD * 0.6), darker(0.25), { parent: 'torso' }));
+  if (!FS.waist) [1, -1].forEach((s) => {
+    parts.push(makePart(`sidePanel${s}`, [torsoW * 0.5 * s, torsoCy - torsoH * 0.06, 0], boxShape(torsoW * 0.5 * s, torsoCy - torsoH * 0.06, 0, 0.05, torsoH * 0.3, torsoD * 0.34), darker(0.3), { parent: 'torso' }));
   });
+  if (FS.rivets) {
+    // リベット(厚殻の記号): 胸板の四隅に小さな鋲
+    [[-1, 1], [1, 1], [-1, -1], [1, -1]].forEach(([sx2, sy2], ri) => {
+      const rx = torsoW * 0.36 * sx2, ry = torsoCy + torsoH * (0.05 + 0.24 * sy2), rz = fz0 + 0.13;
+      parts.push(makePart(`rivet${ri}`, [rx, ry, rz], boxShape(rx, ry, rz, 0.035, 0.035, 0.03), darker(0.5), { parent: 'torso' }));
+    });
+  }
 
-  // --- 放熱フィン/バックパック(frame tier + gen出力でボリューム差) ---
+  // --- 増加装甲(armor id 別のオーバーレイ。性能は sim 側、ここは見た目の記号) ---
+  const armorId = (armorPart && armorPart.id) || build.armor;
+  if (armorId === 'ar6') {
+    parts.push(makePart('aSlab', [0, torsoCy - torsoH * 0.02, fz0 + 0.16], boxShape(0, torsoCy - torsoH * 0.02, fz0 + 0.16, torsoW * 0.38, torsoH * 0.26, 0.055), darker(0.34), { parent: 'torso' }));
+  } else if (armorId === 'ar5') {
+    parts.push(makePart('aPad', [0, torsoCy + torsoH * 0.02, fz0 + 0.14], trapBoxY(0, torsoCy + torsoH * 0.02, fz0 + 0.14, torsoH * 0.2, torsoW * 0.36, 0.05, torsoW * 0.28, 0.035), mixColor(col, '#ffffff', 0.16), { parent: 'torso' }));
+  } else if (armorId === 'ar3') {
+    parts.push(makePart('aL0', [0, torsoCy - torsoH * 0.14, fz0 + 0.14], boxShape(0, torsoCy - torsoH * 0.14, fz0 + 0.14, torsoW * 0.4, torsoH * 0.14, 0.05), darker(0.22), { parent: 'torso' }));
+    parts.push(makePart('aL1', [0, torsoCy + torsoH * 0.1, fz0 + 0.18], boxShape(0, torsoCy + torsoH * 0.1, fz0 + 0.18, torsoW * 0.44, torsoH * 0.14, 0.05), darker(0.1), { parent: 'torso' }));
+  } else if (armorId === 'ar4') {
+    // 反応装甲: レンガ状ブロックの貼り付け(ERAの記号)
+    for (let bx2 = -1; bx2 <= 1; bx2++) for (let by2 = 0; by2 <= 1; by2++) {
+      const px = torsoW * 0.26 * bx2, py = torsoCy + torsoH * (by2 ? 0.16 : -0.1), pz = fz0 + 0.12;
+      parts.push(makePart(`aEra${bx2}_${by2}`, [px, py, pz], boxShape(px, py, pz, torsoW * 0.11, torsoH * 0.09, 0.06), darker(0.46), { parent: 'torso' }));
+    }
+  } else if (armorId === 'ar7') {
+    // 流体装甲: 面取りされた滑らかなパック+流路の発光シーム
+    parts.push(makePart('aFluid', [0, torsoCy, fz0 + 0.15], trapBoxY(0, torsoCy, fz0 + 0.15, torsoH * 0.3, torsoW * 0.4, 0.05, torsoW * 0.3, 0.03), mixColor(col, '#bfe8ff', 0.22), { parent: 'torso' }));
+    parts.push(makePart('aSeam', [0, torsoCy, fz0 + 0.21], boxShape(0, torsoCy, fz0 + 0.21, 0.02, torsoH * 0.24, 0.02), '#7fd4ff', { parent: 'torso', emissive: true }));
+  }
+
+  // --- 背部ユニット(動力炉id別)+放熱フィン(出力でボリューム差) ---
   const genRaw = (genPart && (genPart.output != null ? genPart.output : genPart.cap)) || 0;
   const finScale = 1 + Math.max(0, Math.min(1.6, genRaw / 120));
-  const finCount = 2 + Math.min(2, tier);
-  for (let i = 0; i < finCount; i++) {
-    const fz = -torsoD / 2 - 0.05;
-    const fx = (i - (finCount - 1) / 2) * (torsoW * 0.32);
-    const fh = (0.5 + tier * 0.12) * finScale;
-    parts.push(makePart(`fin${i}`, [fx, torsoCy + 0.1, fz], boxShape(fx, torsoCy + 0.1, fz, 0.05, fh / 2, 0.14 * finScale), mixColor(col, '#000000', 0.3), {
-      parent: 'torso',
-    }));
-  }
-  if (tier >= 1) {
-    const bz = -torsoD / 2 - 0.16 * finScale;
-    parts.push(makePart('backpack', [0, torsoCy, bz], boxShape(0, torsoCy, bz, torsoW * 0.38, torsoH * 0.42, 0.16 * finScale), mixColor(col, '#000000', 0.22), {
-      parent: 'torso',
-    }));
+  const bz0 = -torsoD / 2;
+  const gkind = GS.kind || (tier >= 1 ? 'big' : 'std');
+  const addFins = (n, fh) => {
+    for (let i = 0; i < n; i++) {
+      const fx = (i - (n - 1) / 2) * (torsoW * 0.9 / Math.max(2, n));
+      parts.push(makePart(`fin${i}`, [fx, torsoCy + 0.1, bz0 - 0.05], boxShape(fx, torsoCy + 0.1, bz0 - 0.05, 0.05, fh / 2, 0.14 * finScale), darker(0.3), { parent: 'torso' }));
+    }
+  };
+  if (gkind === 'mini') {
+    parts.push(makePart('backpack', [0, torsoCy - torsoH * 0.1, bz0 - 0.12], boxShape(0, torsoCy - torsoH * 0.1, bz0 - 0.12, torsoW * 0.26, torsoH * 0.22, 0.12), darker(0.22), { parent: 'torso' }));
+    parts.push(makePart('genVent', [0, torsoCy + torsoH * 0.08, bz0 - 0.1], octaShape(0, torsoCy + torsoH * 0.08, bz0 - 0.1, 0.09), '#9fe8c0', { parent: 'torso', emissive: true }));
+  } else if (gkind === 'tanks') {
+    [1, -1].forEach((s) => {
+      const tx = torsoW * 0.24 * s, ty = torsoCy + torsoH * 0.02, tz = bz0 - 0.18;
+      parts.push(makePart(`genTank${s}`, [tx, ty, tz], prismShape([tx, ty, tz], AXIS_Y, torsoH * 0.34, 0.13, 0.13, 8), darker(0.18), { parent: 'torso' }));
+    });
+  } else if (gkind === 'slim') {
+    parts.push(makePart('backpack', [0, torsoCy, bz0 - 0.07], boxShape(0, torsoCy, bz0 - 0.07, torsoW * 0.4, torsoH * 0.38, 0.07), darker(0.2), { parent: 'torso' }));
+  } else if (gkind === 'turbine') {
+    // 渦潮炉: 横置きタービン筒+吸気リング
+    const ty = torsoCy + torsoH * 0.06, tz = bz0 - 0.2;
+    parts.push(makePart('genTurb', [0, ty, tz], prismShape([0, ty, tz], AXIS_X, torsoW * 0.4, 0.2, 0.2, 8), darker(0.18), { parent: 'torso' }));
+    [1, -1].forEach((s) => {
+      const rx = torsoW * 0.42 * s;
+      parts.push(makePart(`genIntake${s}`, [rx, ty, tz], prismShape([rx, ty, tz], AXIS_X, 0.03, 0.24, 0.24, 8), darker(0.42), { parent: 'torso' }));
+    });
+  } else if (gkind === 'core') {
+    // 臨界炉: 露出した発光コア+大型フィン(常に沸点)
+    const cy2 = torsoCy + torsoH * 0.04, cz2 = bz0 - 0.22;
+    parts.push(makePart('backpack', [0, cy2, cz2 + 0.08], boxShape(0, cy2, cz2 + 0.08, torsoW * 0.4, torsoH * 0.42, 0.12), darker(0.22), { parent: 'torso' }));
+    parts.push(makePart('genCore', [0, cy2, cz2 - 0.06], octaShape(0, cy2, cz2 - 0.06, 0.22), '#ffd27f', { parent: 'torso', emissive: true }));
+    addFins(4, (0.62 + tier * 0.12) * finScale);
+  } else if (gkind === 'big') {
+    parts.push(makePart('backpack', [0, torsoCy, bz0 - 0.16 * finScale], boxShape(0, torsoCy, bz0 - 0.16 * finScale, torsoW * 0.38, torsoH * 0.42, 0.16 * finScale), darker(0.22), { parent: 'torso' }));
+    addFins(4, (0.5 + tier * 0.12) * finScale);
+  } else {   // std
+    parts.push(makePart('backpack', [0, torsoCy, bz0 - 0.1], boxShape(0, torsoCy, bz0 - 0.1, torsoW * 0.34, torsoH * 0.36, 0.1), darker(0.22), { parent: 'torso' }));
+    addFins(2, (0.5 + tier * 0.12) * finScale);
   }
 
-  // --- 頭部(センサー種を frame id ハッシュで差別化: バイザー/単眼/双眼) ---
+  // --- 頭部(フレームid別のセンサ種: バイザー/単眼/双眼/旗甲クレスト。未知idはハッシュ) ---
   const headY = torsoCy + torsoH / 2 + 0.35;
   parts.push(makePart('head', [0, headY, 0], boxShape(0, headY, 0.05, 0.32, 0.32, 0.32), col, {
     parent: 'torso',
   }));
   const sensorRoll = strHash((build.frame || 'f0') + '::sensor');
-  if (sensorRoll < 0.34) {
-    parts.push(makePart('visor', [0, headY, torsoD * 0.4], boxShape(0, headY, torsoD * 0.4, 0.24, 0.1, 0.06), '#8fffe6', {
+  const headKind = FS.head || (sensorRoll < 0.34 ? 'visor' : sensorRoll < 0.67 ? 'mono' : 'twin');
+  if (headKind === 'visor') {
+    parts.push(makePart('visor', [0, headY, torsoD * 0.4], boxShape(0, headY, torsoD * 0.4, 0.26, 0.09, 0.06), '#8fffe6', {
       parent: 'head', emissive: true,
     }));
-  } else if (sensorRoll < 0.67) {
-    parts.push(makePart('visor', [0, headY, torsoD * 0.42], boxShape(0, headY, torsoD * 0.42, 0.15, 0.15, 0.05), '#ffe08a', {
+  } else if (headKind === 'mono') {
+    parts.push(makePart('visor', [0, headY, torsoD * 0.42], octaShape(0, headY, torsoD * 0.42, 0.13), '#ffe08a', {
       parent: 'head', emissive: true,
     }));
-  } else {
+    parts.push(makePart('brow', [0, headY + 0.16, torsoD * 0.36], boxShape(0, headY + 0.16, torsoD * 0.36, 0.22, 0.05, 0.1), darker(0.3), { parent: 'head' }));
+  } else {   // twin / crest(どちらも双眼)
     [1, -1].forEach((s) => {
       parts.push(makePart(`visor${s}`, [0.12 * s, headY, torsoD * 0.4], boxShape(0.12 * s, headY, torsoD * 0.4, 0.08, 0.08, 0.05), '#8fd0ff', {
         parent: 'head', emissive: true,
       }));
     });
   }
+  if (FS.crest || headKind === 'crest') {
+    // 旗甲のクレスト(縦フィン)+左右の角。ヒーローシルエット(バーチャロン流)。
+    parts.push(makePart('crest', [0, headY + 0.34, 0.02], boxShape(0, headY + 0.34, 0.02, 0.035, 0.24, 0.16), '#d8b24a', { parent: 'head' }));
+    parts.push(makePart('crestGem', [0, headY + 0.22, torsoD * 0.36], boxShape(0, headY + 0.22, torsoD * 0.36, 0.05, 0.05, 0.04), '#ffd27f', { parent: 'head', emissive: true }));
+    [1, -1].forEach((s) => {
+      parts.push(makePart(`horn${s}`, [0.3 * s, headY + 0.2, 0], boxShape(0.3 * s, headY + 0.2, 0, 0.03, 0.2, 0.05), '#d8b24a', {
+        parent: 'head', restAngle: -0.5 * s, restAxis: 'z',
+      }));
+    });
+  }
+  if (FS.antenna) {
+    // 通信アンテナ(軽量・襲撃殻の記号): 頭側面の細い棒+先端灯
+    const ax = -0.26, ay = headY + 0.3;
+    parts.push(makePart('antenna', [ax, ay, -0.06], boxShape(ax, ay, -0.06, 0.018, 0.24, 0.018), darker(0.35), {
+      parent: 'head', restAngle: 0.18, restAxis: 'z',
+    }));
+    parts.push(makePart('antennaTip', [ax, ay + 0.24, -0.06], boxShape(ax, ay + 0.24, -0.06, 0.03, 0.03, 0.03), '#ff8d7a', { parent: 'antenna', emissive: true }));
+  }
 
-  // --- 脚部 ---
+  // --- 脚部(kind の運動学は共通、id で肉付け=LEG_STYLES) ---
   if (legsKind === 'quad') {
     const legY0 = hipY;
     const kneeY = legY0 * 0.5;
-    const xs = [torsoW * 0.55, -torsoW * 0.55];   // xi=0 右 / xi=1 左
+    const tU = LS.thigh || 1, tL = LS.shin || 1;
+    const stw = LS.stanceW || 1;
+    const xs = [torsoW * 0.55 * stw, -torsoW * 0.55 * stw];   // xi=0 右 / xi=1 左
     const zs = [torsoD * 0.9, -torsoD * 0.9];     // zi=0 前 / zi=1 後
     let li = 0;
     for (let zi = 0; zi < zs.length; zi++) {
@@ -341,13 +539,21 @@ export function mechMesh(build, PARTS, color) {
         // 斜対歩(トロット): 対角の脚が同位相で動く(前右+後左 / 前左+後右)。四足動物の速歩。
         // 旧実装は (li%2) で左右同側が同位相=側対歩(ラクダ歩き)になっていた。
         const phase = ((xi + zi) % 2) === 0 ? 0 : Math.PI;
-        parts.push(makePart(`legU${li}`, [xx, legY0, zx], boxShape(xx, (legY0 + kneeY) / 2, zx, 0.16, (legY0 - kneeY) / 2, 0.16), col, {
+        parts.push(makePart(`legU${li}`, [xx, legY0, zx], boxShape(xx, (legY0 + kneeY) / 2, zx, 0.16 * tU, (legY0 - kneeY) / 2, 0.16 * tU), col, {
           swingAxis: 'x', swingAmp: 0.52, swingPhase: phase, deadAxis: 'x', deadAngle: 0.7, leg: 'hip',
         }));
-        parts.push(makePart(`legL${li}`, [xx, kneeY, zx], boxShape(xx, kneeY / 2, zx, 0.13, kneeY / 2, 0.13), col, {
+        parts.push(makePart(`legL${li}`, [xx, kneeY, zx], boxShape(xx, kneeY / 2, zx, 0.13 * tL, kneeY / 2, 0.13 * tL), col, {
           parent: `legU${li}`,
           swingAxis: 'x', swingAmp: 0.46, swingPhase: phase + 0.6, swingClampPositive: true, deadAxis: 'x', deadAngle: -0.5, leg: 'knee',
         }));
+        if (LS.fender) {
+          // 守宮: 腿上のロープロファイルなフェンダー(低い重心の記号)
+          parts.push(makePart(`fender${li}`, [xx, legY0 + 0.12, zx], boxShape(xx, legY0 + 0.12, zx, 0.2 * tU, 0.05, 0.26), darker(0.28), { parent: `legU${li}` }));
+        }
+        if (LS.hipArmor) {
+          // 岩戸: 股関節の装甲キャップ(砲脚の量感)
+          parts.push(makePart(`hipcap${li}`, [xx, legY0, zx], octaShape(xx, legY0, zx, 0.2), darker(0.2), { parent: `legU${li}` }));
+        }
         li++;
       }
     }
@@ -355,34 +561,57 @@ export function mechMesh(build, PARTS, color) {
     // ③ ホバー: 車高を低く、前後に長い低スカート(裾が少し広がる)+基部のアンダーグロー+後方スラスタ。
     //    ホバークラフトのイメージ(背が低く後ろが長い)。脚は持たない。
     hoverInfo = { baseLift: 0.9 * MECH_SCALE, bobAmp: 0.18 * MECH_SCALE };
+    const hl = LS.hullLen || 1;
     const skH = hipY * 0.42;                              // 低い車高
     const skCz = -torsoD * 0.4;                           // 後ろへ寄せる
-    const skLenB = torsoD * 2.0, skLenT = torsoD * 1.6;   // 前後に長い(底が少し長い=裾広がり)
+    const skLenB = torsoD * 2.0 * hl, skLenT = torsoD * 1.6 * hl;   // 前後に長い(底が少し長い=裾広がり)
     const skW = torsoW * 0.95;
     parts.push(makePart('skirt', [0, skH, skCz], trapBoxZ(0, skH, skCz, skW, skH, skLenB, skLenT), mixColor(col, '#20242a', 0.3), {}));
     parts.push(makePart('deck', [0, skH * 2, skCz * 0.4], boxShape(0, skH * 2, skCz * 0.4, skW * 0.82, skH * 0.5, skLenT * 0.7), mixColor(col, '#000000', 0.15), {}));
     parts.push(makePart('underglow', [0, 0.06, skCz], trapBoxZ(0, 0.06, skCz, skW * 1.05, 0.04, skLenB * 1.02, skLenB), '#7fe7ff', { emissive: true }));
-    parts.push(makePart('thruster', [0, skH, skCz - skLenB * 0.5], octaShape(0, skH, skCz - skLenB * 0.5, 0.28), '#bff7ff', { emissive: true }));
+    const thN = LS.thrusters || 1;
+    for (let ti = 0; ti < thN; ti++) {
+      const tx = thN === 1 ? 0 : (ti === 0 ? 1 : -1) * skW * 0.42;
+      parts.push(makePart(`thruster${ti ? ti : ''}`, [tx, skH, skCz - skLenB * 0.5], octaShape(tx, skH, skCz - skLenB * 0.5, thN === 1 ? 0.28 : 0.22), '#bff7ff', { emissive: true }));
+    }
+    if (LS.floats) {
+      // 浮舟: 舷側フロート(船めいた左右の張り出し)
+      [1, -1].forEach((s) => {
+        const fx = skW * 0.95 * s;
+        parts.push(makePart(`float${s}`, [fx, skH * 0.9, skCz], trapBoxZ(fx, skH * 0.9, skCz, 0.14, skH * 0.55, skLenB * 0.6, skLenT * 0.5), darker(0.24), {}));
+      });
+    }
   } else if (legsKind === 'tank') {
     rockInfo = { amp: 0.03, freq: 1.4 };
+    const tl = LS.treadLen || 1;
     const hullY = hipY * 0.6;
-    parts.push(makePart('hull', [0, hullY, 0], boxShape(0, hullY, 0, torsoW * 0.7, hipY * 0.4, torsoD * 1.3), mixColor(col, '#111111', 0.2), {}));
+    parts.push(makePart('hull', [0, hullY, 0], boxShape(0, hullY, 0, torsoW * 0.7, hipY * 0.4, torsoD * 1.3 * tl), mixColor(col, '#111111', 0.2), {}));
+    if (LS.domed) {
+      // 亀甲: 甲羅めいた天板(上へすぼむ台形)
+      parts.push(makePart('dome', [0, hullY + hipY * 0.4, 0], trapBoxY(0, hullY + hipY * 0.4, 0, hipY * 0.14, torsoW * 0.66, torsoD * 1.15 * tl, torsoW * 0.4, torsoD * 0.7 * tl), darker(0.14), { parent: 'hull' }));
+    }
     [1, -1].forEach((side) => {
       const tx = torsoW * 0.75 * side, th = hipY * 0.35;
       // 逆台形の履帯側面(上が前後に長い=実戦車のシルエット)
-      parts.push(makePart(`tread${side}`, [tx, th, 0], trapBoxZ(tx, th, 0, 0.22, th, torsoD * 1.2, torsoD * 1.6), '#1a1a1a', {}));
+      parts.push(makePart(`tread${side}`, [tx, th, 0], trapBoxZ(tx, th, 0, 0.22, th, torsoD * 1.2 * tl, torsoD * 1.6 * tl), '#1a1a1a', {}));
       // 転輪(下部に複数・明色で履帯と差)
       const wr = th * 0.42;
-      for (let wi = 0; wi < 4; wi++) {
-        const wz = -torsoD * 1.0 + wi * (torsoD * 2.0 / 3);
+      const wn = LS.wheels || 4;
+      for (let wi = 0; wi < wn; wi++) {
+        // wheels:1 でも 0 除算にしない(1個なら中央)
+        const wz = wn > 1 ? -torsoD * 1.0 * tl + wi * (torsoD * 2.0 * tl / (wn - 1)) : 0;
         parts.push(makePart(`roadw${side}_${wi}`, [tx, wr, wz], prismShape([tx, wr, wz], AXIS_X, 0.24, wr, wr, 7), mixColor(col, '#2a2a2a', 0.4), {}));
+      }
+      if (LS.skirt) {
+        // 城塞: 履帯上部を覆うサイドスカート装甲
+        parts.push(makePart(`skirtArm${side}`, [tx, th * 1.7, 0], boxShape(tx, th * 1.7, 0, 0.26, th * 0.5, torsoD * 1.5 * tl), darker(0.16), {}));
       }
     });
   } else if (legsKind === 'wheel') {
     // ④ 二輪(セグウェイ/ボトムズのローラーダッシュ): 大径の同軸2輪でバランス。多輪の履帯的シルエットを
     //    避けて履帯と一目で差別化。前進時は moveLocal の前傾(leanX)でバランサーらしく前のめりになる。
     rockInfo = { amp: 0.02, freq: 2.2 };
-    const wr = hipY * 0.6;                 // 大径ホイール(接地=中心をwrに置き底が地面)
+    const wr = hipY * 0.6 * (LS.wheelR || 1);   // 大径ホイール(接地=中心をwrに置き底が地面)
     const hullY = wr + hipY * 0.2;         // 車体は車軸の上でバランス
     parts.push(makePart('hull', [0, hullY, 0], boxShape(0, hullY, 0, torsoW * 0.55, hipY * 0.3, torsoD * 0.7), mixColor(col, '#111111', 0.18), {}));
     parts.push(makePart('axle', [0, wr, 0], boxShape(0, wr, 0, torsoW * 0.9, 0.08, 0.08), '#222222', {}));
@@ -395,56 +624,91 @@ export function mechMesh(build, PARTS, color) {
       parts.push(makePart(`hub${side}`, [wx, wr, 0], prismShape([wx, wr, 0], AXIS_X, 0.2, wr * 0.34, wr * 0.34, 6), mixColor(col, '#333333', 0.35), {
         spin: { axis: 'x', speed: 3.2 },
       }));
+      if (LS.spoke) {
+        // 風車: 廉価輪の露出スポーク(wheel の子=回転が見える)
+        for (let si2 = 0; si2 < 3; si2++) {
+          const ang = si2 * Math.PI / 3;
+          parts.push(makePart(`spoke${side}_${si2}`, [wx, wr, 0], boxShape(wx, wr, 0, 0.06, wr * 0.86, 0.05), mixColor(col, '#444444', 0.4), {
+            parent: `wheel${side}`, restAngle: ang, restAxis: 'x',
+          }));
+        }
+      }
+      if (LS.fender) {
+        // 疾駆: ホイールを覆う流線フェンダー(hull の子=回転しない)
+        parts.push(makePart(`fenderW${side}`, [wx, wr + wr * 0.7, 0], trapBoxZ(wx, wr + wr * 0.7, 0, 0.2, wr * 0.32, wr * 1.05, wr * 0.75), darker(0.14), { parent: 'hull' }));
+      }
     }
   } else if (legsKind === 'reverse') {
-    // ① 逆関節(鳥脚/デジチグレード): 膝は高く前方、脛は膝から後方へ下り、踵(足首)が後ろへ張り出す。
-    //    足は踵から前方へ接地。従来は膝が前折れ=「普通の膝」に見えたのを鳥脚の後ろ折れシルエットへ修正。
-    const kneeY = hipY * 0.62;    // 膝(高い位置・前へ)
-    const ankleY = hipY * 0.20;   // 足首/踵(低く後方へ張り出す)
+    // ① 逆関節(鳥脚): IKモデルと視覚を一致させる(四脚の toe 方式)。脛(legL)は膝から接地まで届く
+    //    1本のIKボーンで、planted歩容(walker2)が足先を地面へ駆動する。膝は後折れ(elbow=+1)+
+    //    常時軽い屈み(REV_BEND)で鳥脚のシルエットを姿勢そのもので出す。踵の距(スパー)と爪先は
+    //    脛の子の装飾パーツ(IK非関与)。旧実装は足首/足の装飾関節が接地に届かず footContactY=0.88 で
+    //    宙に浮いていた(ソフト版は影が無く目立たなかったが Three の接地シャドウで露呈する)。
+    const kneeY = hipY * 0.62;
+    const tU = LS.thigh || 1, tL = LS.shin || 1;
+    const spurS = LS.spurS || 1, toeS = LS.toeS || 1;
     [1, -1].forEach((side, li) => {
       const xx = torsoW * 0.3 * side;
       const phase = li === 0 ? 0 : Math.PI;
-      // 腿: 股から前下がり(膝が前へ出る)
-      parts.push(makePart(`legU${li}`, [xx, hipY, 0], boxShape(xx, (hipY + kneeY) / 2, 0, 0.19, (hipY - kneeY) / 2, 0.19), col, {
-        restAngle: 0.5, swingAxis: 'x', swingAmp: 0.42, swingPhase: phase, deadAxis: 'x', deadAngle: 0.9, leg: 'hip',
+      parts.push(makePart(`legU${li}`, [xx, hipY, 0], boxShape(xx, (hipY + kneeY) / 2, 0, 0.19 * tU, (hipY - kneeY) / 2, 0.19 * tU), col, {
+        swingAxis: 'x', swingAmp: 0.42, swingPhase: phase, deadAxis: 'x', deadAngle: 0.9, leg: 'hip',
       }));
-      // 脛: 膝から後ろ下がり(踵が後方へ張り出す=逆関節の要)。親(腿)の前傾を打ち消して余りある逆角。
-      parts.push(makePart(`legL${li}`, [xx, kneeY, 0], boxShape(xx, (kneeY + ankleY) / 2, 0, 0.15, (kneeY - ankleY) / 2, 0.15), col, {
+      parts.push(makePart(`legL${li}`, [xx, kneeY, 0], boxShape(xx, kneeY / 2, 0, 0.15 * tL, kneeY / 2, 0.15 * tL), col, {
         parent: `legU${li}`,
-        restAngle: -1.05, swingAxis: 'x', swingAmp: 0.5, swingPhase: phase + 0.6, deadAxis: 'x', deadAngle: -0.9,
-        clampRange: [-1.75, -0.15], leg: 'knee',
+        swingAxis: 'x', swingAmp: 0.5, swingPhase: phase + 0.6, swingClampPositive: true, deadAxis: 'x', deadAngle: -0.9, leg: 'knee',
       }));
-      // 足: 踵から前方へ接地(爪先前)
-      parts.push(makePart(`foot${li}`, [xx, ankleY, 0.05], boxShape(xx, ankleY - 0.02, 0.22, 0.16, 0.08, 0.34), mixColor(col, '#111111', 0.3), {
-        parent: `legL${li}`,
-        restAngle: 0.78, deadAxis: 'x', deadAngle: 0.3,
-      }));
+      // 踵の距(後方へ張り出す=鳥脚の記号)+爪先プレート(前)。脛の子=IKに追従する装飾。
+      parts.push(makePart(`spur${li}`, [xx, kneeY * 0.32, -0.24], boxShape(xx, kneeY * 0.32, -0.24, 0.11 * spurS, 0.3 * spurS, 0.18 * spurS), mixColor(col, '#111111', 0.3), { parent: `legL${li}` }));
+      parts.push(makePart(`toe${li}`, [xx, 0.12, 0.1], boxShape(xx, 0.12, 0.1, 0.14 * toeS, 0.12, 0.3 * toeS), mixColor(col, '#111111', 0.3), { parent: `legL${li}` }));
+      if (LS.piston) {
+        // 跳兵: 脛裏の跳躍ピストン(バネの記号)
+        parts.push(makePart(`piston${li}`, [xx, kneeY * 0.6, -0.14], prismShape([xx, kneeY * 0.6, -0.14], AXIS_Y, kneeY * 0.3, 0.05, 0.05, 6), mixColor(col, '#8a9096', 0.5), { parent: `legL${li}` }));
+      }
     });
   } else {
     // biped
     const kneeY = hipY * 0.5;
+    const tU = LS.thigh || 1, tL = LS.shin || 1, tF = LS.foot || 1;
     [1, -1].forEach((side, li) => {
       const xx = torsoW * 0.32 * side;
       const phase = li === 0 ? 0 : Math.PI;
-      parts.push(makePart(`legU${li}`, [xx, hipY, 0], boxShape(xx, (hipY + kneeY) / 2, 0, 0.22, (hipY - kneeY) / 2, 0.22), col, {
+      parts.push(makePart(`legU${li}`, [xx, hipY, 0], boxShape(xx, (hipY + kneeY) / 2, 0, 0.22 * tU, (hipY - kneeY) / 2, 0.22 * tU), col, {
         swingAxis: 'x', swingAmp: 0.64, swingPhase: phase, deadAxis: 'x', deadAngle: 0.8, leg: 'hip',
       }));
-      parts.push(makePart(`legL${li}`, [xx, kneeY, 0], boxShape(xx, kneeY / 2, 0, 0.18, kneeY / 2, 0.18), col, {
+      parts.push(makePart(`legL${li}`, [xx, kneeY, 0], boxShape(xx, kneeY / 2, 0, 0.18 * tL, kneeY / 2, 0.18 * tL), col, {
         parent: `legU${li}`,
         swingAxis: 'x', swingAmp: 0.62, swingPhase: phase + 0.7, swingClampPositive: true, deadAxis: 'x', deadAngle: -0.6, leg: 'knee',
       }));
-      parts.push(makePart(`foot${li}`, [xx, 0.1, 0.08], boxShape(xx, 0.1, 0.08, 0.2, 0.1, 0.32), mixColor(col, '#111111', 0.3), {
+      parts.push(makePart(`foot${li}`, [xx, 0.1, 0.08], boxShape(xx, 0.1, 0.08, 0.2 * tF, 0.1, 0.32 * tF), mixColor(col, '#111111', 0.3), {
         parent: `legL${li}`,
         deadAxis: 'x', deadAngle: -0.3,
       }));
+      if (LS.kneePlate) {
+        // 堅牢: 膝前の追加装甲(戦列二脚の記号)
+        parts.push(makePart(`kneep${li}`, [xx, kneeY + 0.06, 0.16 * tL], boxShape(xx, kneeY + 0.06, 0.16 * tL, 0.16 * tL, 0.18, 0.07), darker(0.22), { parent: `legL${li}` }));
+      }
+      if (LS.calfBoost) {
+        // 疾風/野分: ふくらはぎのブースタ(ノズル発光=速さの記号)
+        parts.push(makePart(`calf${li}`, [xx, kneeY * 0.62, -0.16 * tL], boxShape(xx, kneeY * 0.62, -0.16 * tL, 0.1, kneeY * 0.24, 0.09), darker(0.28), { parent: `legL${li}` }));
+        parts.push(makePart(`calfN${li}`, [xx, kneeY * 0.36, -0.2 * tL], boxShape(xx, kneeY * 0.36, -0.2 * tL, 0.05, 0.04, 0.04), '#7fe7ff', { parent: `calf${li}`, emissive: true }));
+      }
     });
+    if (LS.hipArmor) {
+      // 野分: 腰部スカート装甲(torso 子=脚の振りに干渉しない)
+      [1, -1].forEach((s) => {
+        parts.push(makePart(`hipSkirt${s}`, [torsoW * 0.4 * s, hipY + 0.15, 0], trapBoxY(torsoW * 0.4 * s, hipY + 0.15, 0, 0.24, 0.1, 0.2, 0.16, 0.26), darker(0.18), {
+          parent: 'torso', restAngle: -0.16 * s, restAxis: 'z',
+        }));
+      });
+    }
   }
 
-  // --- 腕+武装(両手とも共通の得物ロジック。腕→拳→得物 の階層で連鎖) ---
+  // --- 腕+武装(腕→拳→得物 の階層で連鎖。得物は WPN_STYLES の id 別レシピ) ---
   const shoulderY = torsoCy + torsoH * 0.32;
   const wpns = [{ side: 1, part: wpnRPart }, { side: -1, part: wpnLPart }];
   wpns.forEach(({ side, part }) => {
     const kind = (part && part.kind) || 'rifle';
+    const st = WS(part && part.id) || {};
     const sx = (torsoW / 2 + 0.18) * side;
     const armLen = 1.5;
     const armY0 = shoulderY, armY1 = shoulderY - armLen;
@@ -460,16 +724,35 @@ export function mechMesh(build, PARTS, color) {
     }));
 
     if (kind === 'missile') {
-      parts.push(makePart(`pod${side}`, [sx, shoulderY + 0.35, -0.1], boxShape(sx, shoulderY + 0.35, -0.1, 0.34, 0.3, 0.6), mixColor(col, '#000000', 0.15), {
+      // ポッド寸法+前面の発射管(id 別: 小型=2連 / 標準=4連 / 大蛇=3連大口径)
+      const pw = st.podW || 0.34, ph = st.podH || 0.3, pd = st.podD || 0.6;
+      const py = shoulderY + 0.35, pz = -0.1;
+      const podName = `pod${side}`;
+      parts.push(makePart(podName, [sx, py, pz], boxShape(sx, py, pz, pw, ph, pd), mixColor(col, '#000000', 0.15), {
         parent: armName, role: 'pod', side,
       }));
+      const tubes = st.tubes || 2;
+      const tr = Math.min(0.09, pw * 0.75 / tubes);
+      for (let ti = 0; ti < tubes; ti++) {
+        const tx = sx + (tubes === 1 ? 0 : (ti / (tubes - 1) - 0.5) * (pw * 1.5 - tr * 2));
+        parts.push(makePart(`tube${side}_${ti}`, [tx, py + ph * 0.3, pz + pd], prismShape([tx, py + ph * 0.3, pz + pd], AXIS_Z, 0.05, tr, tr, 6), '#1c2024', { parent: podName }));
+      }
     } else if (kind === 'blade') {
       parts.push(makePart(`hilt${side}`, [sx, handY, 0.15], boxShape(sx, handY, 0.15, 0.13, 0.13, 0.22), mixColor(col, '#000000', 0.2), {
         parent: fistName, role: 'hilt', side,
       }));
-      parts.push(makePart(`blade${side}`, [sx, handY - 0.62, 0.15], boxShape(sx, handY - 0.62, 0.15, 0.035, 0.85, 0.16), '#c8fff0', {
-        parent: `hilt${side}`, emissive: true, role: 'blade', side,
-      }));
+      if (st.cleaver) {
+        // 作業用重刃: 金属の厚刃(非発光)+背の補強リブ。工廠の解体刃。
+        parts.push(makePart(`blade${side}`, [sx, handY - 0.62, 0.15], trapBoxY(sx, handY - 0.62, 0.15, 0.85, 0.05, 0.24, 0.02, 0.1), '#aeb6ba', {
+          parent: `hilt${side}`, role: 'blade', side,
+        }));
+        parts.push(makePart(`bladeRib${side}`, [sx, handY - 0.3, 0.15 - 0.16], boxShape(sx, handY - 0.3, 0.15 - 0.16, 0.06, 0.5, 0.06), mixColor(col, '#000000', 0.3), { parent: `blade${side}` }));
+      } else {
+        // 光刃: 発光する刀身
+        parts.push(makePart(`blade${side}`, [sx, handY - 0.62, 0.15], boxShape(sx, handY - 0.62, 0.15, 0.035, 0.85, 0.16), '#c8fff0', {
+          parent: `hilt${side}`, emissive: true, role: 'blade', side,
+        }));
+      }
     } else if (kind === 'drill') {
       const drillLen = 1.0;
       parts.push(makePart(`drillcasing${side}`, [sx, handY, 0.15], boxShape(sx, handY, 0.15, 0.2, 0.2, 0.3), mixColor(col, '#0a0a0a', 0.3), {
@@ -478,6 +761,10 @@ export function mechMesh(build, PARTS, color) {
       parts.push(makePart(`drillbit${side}`, [sx, handY, 0.15 + drillLen / 2], prismShape([sx, handY, 0.15 + drillLen / 2], AXIS_Z, drillLen / 2, 0, 0.22, 7), mixColor(col, '#111111', 0.1), {
         parent: fistName, spin: { axis: 'z', speed: 2.4 }, role: 'drill', side,
       }));
+      if (st.collar) {
+        // 基部の締め付けカラー(回らない側=ケーシングの子)
+        parts.push(makePart(`drillCol${side}`, [sx, handY, 0.48], prismShape([sx, handY, 0.48], AXIS_Z, 0.04, 0.25, 0.25, 8), mixColor(col, '#333333', 0.4), { parent: `drillcasing${side}` }));
+      }
     } else if (kind === 'rocketpunch') {
       parts.push(makePart(`rpforearm${side}`, [sx, handY, 0.12], boxShape(sx, handY, 0.12, 0.19, 0.22, 0.34), col, {
         parent: fistName, role: 'rocketFist', side,
@@ -485,18 +772,46 @@ export function mechMesh(build, PARTS, color) {
       parts.push(makePart(`rpknuckle${side}`, [sx, handY, 0.42], boxShape(sx, handY, 0.42, 0.2, 0.22, 0.14), mixColor(col, '#000000', 0.1), {
         parent: fistName, role: 'rocketFist', side,
       }));
+      if (st.thrustRing) {
+        // 手首の推進リング(飛んで帰る拳の記号)
+        parts.push(makePart(`rpRing${side}`, [sx, handY, 0.02], prismShape([sx, handY, 0.02], AXIS_Z, 0.03, 0.24, 0.24, 8), mixColor(col, '#333333', 0.4), { parent: fistName, side }));
+      }
     } else {
-      const dims = kind === 'railgun'
-        ? { len: 1.9, rad: 0.19, muzzleSize: 0.32 }
-        : kind === 'shotgun'
-        ? { len: 0.62, rad: 0.27, muzzleSize: 0.3 }
-        : kind === 'beam'
-        ? { len: 1.05, rad: 0.13, muzzleSize: 0.16 }
-        : { len: 1.15, rad: 0.15, muzzleSize: 0.14 }; // rifle(既定)
+      const dims = {
+        len: st.len || (kind === 'railgun' ? 1.9 : kind === 'shotgun' ? 0.62 : kind === 'beam' ? 1.05 : 1.15),
+        rad: st.rad || (kind === 'railgun' ? 0.19 : kind === 'shotgun' ? 0.27 : kind === 'beam' ? 0.13 : 0.15),
+        muzzleSize: st.muzzle || (kind === 'railgun' ? 0.32 : kind === 'shotgun' ? 0.3 : kind === 'beam' ? 0.16 : 0.14),
+      };
       const gunZ = 0.1 + dims.len / 2;
-      parts.push(makePart(`gun${side}`, [sx, handY, gunZ], boxShape(sx, handY, gunZ, dims.rad, dims.rad, dims.len / 2), mixColor(col, '#0a0a0a', 0.35), {
-        parent: fistName, role: 'gunBarrel', side,
-      }));
+      const gunName = `gun${side}`;
+      if (st.twin) {
+        // 双連ビーム: レシーバ+左右2本の細銃身
+        parts.push(makePart(gunName, [sx, handY, gunZ], boxShape(sx, handY, gunZ - dims.len * 0.28, dims.rad * 1.6, dims.rad * 1.2, dims.len * 0.22), mixColor(col, '#0a0a0a', 0.35), {
+          parent: fistName, role: 'gunBarrel', side,
+        }));
+        [1, -1].forEach((bs) => {
+          const bx = sx + dims.rad * 0.85 * bs;
+          parts.push(makePart(`barrel${side}_${bs}`, [bx, handY, gunZ], boxShape(bx, handY, gunZ, dims.rad * 0.55, dims.rad * 0.55, dims.len / 2), mixColor(col, '#0a0a0a', 0.3), { parent: gunName }));
+        });
+      } else if (st.rotary) {
+        // 速射機関砲: レシーバ+回転する3連銃身クラスタ(rotor の子=軸周りに公転)
+        parts.push(makePart(gunName, [sx, handY, gunZ - dims.len * 0.3], boxShape(sx, handY, gunZ - dims.len * 0.3, dims.rad * 1.3, dims.rad * 1.3, dims.len * 0.2), mixColor(col, '#0a0a0a', 0.35), {
+          parent: fistName, role: 'gunBarrel', side,
+        }));
+        const rotName = `rotor${side}`;
+        parts.push(makePart(rotName, [sx, handY, gunZ], prismShape([sx, handY, gunZ], AXIS_Z, dims.len * 0.12, dims.rad * 0.5, dims.rad * 0.5, 6), mixColor(col, '#222222', 0.4), {
+          parent: gunName, spin: { axis: 'z', speed: 5.0 },
+        }));
+        for (let bi = 0; bi < 3; bi++) {
+          const ba = bi * Math.PI * 2 / 3;
+          const bx = sx + Math.cos(ba) * dims.rad * 0.62, by = handY + Math.sin(ba) * dims.rad * 0.62;
+          parts.push(makePart(`barrel${side}_${bi}`, [bx, by, gunZ + dims.len * 0.1], boxShape(bx, by, gunZ + dims.len * 0.1, 0.045, 0.045, dims.len * 0.42), '#141414', { parent: rotName }));
+        }
+      } else {
+        parts.push(makePart(gunName, [sx, handY, gunZ], boxShape(sx, handY, gunZ, dims.rad, dims.rad, dims.len / 2), mixColor(col, '#0a0a0a', 0.35), {
+          parent: fistName, role: 'gunBarrel', side,
+        }));
+      }
       if (kind === 'railgun') {
         [1, -1].forEach((rside) => {
           parts.push(makePart(`rail${side}_${rside}`, [sx, handY + dims.rad * 0.75 * rside, gunZ], boxShape(sx, handY + dims.rad * 0.75 * rside, gunZ, 0.03, 0.03, dims.len / 2 - 0.05), '#bff7ff', {
@@ -507,14 +822,71 @@ export function mechMesh(build, PARTS, color) {
       parts.push(makePart(`muzzle${side}`, [sx, handY, 0.1 + dims.len], boxShape(sx, handY, 0.1 + dims.len, dims.muzzleSize * 0.6, dims.muzzleSize * 0.6, 0.06), kind === 'beam' ? '#bff7ff' : '#8a8a8a', {
         parent: `gun${side}`, emissive: kind === 'beam', role: 'muzzle', side,
       }));
-      // 銃のディティール: スコープ(上)と弾倉(下)。gun 子で発砲リコイルに追従。
-      parts.push(makePart(`scope${side}`, [sx, handY + dims.rad + 0.06, gunZ - dims.len * 0.12], boxShape(sx, handY + dims.rad + 0.06, gunZ - dims.len * 0.12, 0.045, 0.05, dims.len * 0.2), mixColor(col, '#000000', 0.45), { parent: `gun${side}` }));
-      if (kind === 'rifle' || kind === 'railgun' || kind === 'shotgun') {
+      // 銃のディティール(id 別): スコープ/弾倉/前握把/マズルブレーキ/冷却リング/蓄電器/ドラム/タンク等
+      if (st.scopeBig) {
+        const sy2 = handY + dims.rad + 0.1, sz2 = gunZ - dims.len * 0.18;
+        parts.push(makePart(`scope${side}`, [sx, sy2, sz2], prismShape([sx, sy2, sz2], AXIS_Z, dims.len * 0.16, 0.06, 0.06, 6), mixColor(col, '#000000', 0.45), { parent: `gun${side}` }));
+        parts.push(makePart(`lens${side}`, [sx, sy2, sz2 - dims.len * 0.17], boxShape(sx, sy2, sz2 - dims.len * 0.17, 0.04, 0.04, 0.02), '#8fd0ff', { parent: `scope${side}`, emissive: true }));
+      } else if (!st.rotary && !st.tank) {
+        parts.push(makePart(`scope${side}`, [sx, handY + dims.rad + 0.06, gunZ - dims.len * 0.12], boxShape(sx, handY + dims.rad + 0.06, gunZ - dims.len * 0.12, 0.045, 0.05, dims.len * 0.2), mixColor(col, '#000000', 0.45), { parent: `gun${side}` }));
+      }
+      if (st.mag || (!WS(part && part.id) && (kind === 'rifle' || kind === 'railgun' || kind === 'shotgun'))) {
         parts.push(makePart(`mag${side}`, [sx, handY - dims.rad - 0.11, gunZ - dims.len * 0.18], boxShape(sx, handY - dims.rad - 0.11, gunZ - dims.len * 0.18, 0.08, 0.15, 0.09), mixColor(col, '#000000', 0.32), { parent: `gun${side}` }));
       }
+      if (st.grip) {
+        parts.push(makePart(`grip${side}`, [sx, handY - dims.rad - 0.09, gunZ + dims.len * 0.16], boxShape(sx, handY - dims.rad - 0.09, gunZ + dims.len * 0.16, 0.05, 0.11, 0.05), mixColor(col, '#000000', 0.4), { parent: `gun${side}` }));
+      }
+      if (st.brake) {
+        // マズルブレーキ(制退器): 銃口の一回り太い箱
+        parts.push(makePart(`brake${side}`, [sx, handY, 0.1 + dims.len - 0.1], boxShape(sx, handY, 0.1 + dims.len - 0.1, dims.rad * 1.4, dims.rad * 1.4, 0.09), mixColor(col, '#111111', 0.3), { parent: `gun${side}` }));
+      }
+      if (st.shroud) {
+        // 徹甲ライフル: 後半を覆う厚い砲身シュラウド
+        parts.push(makePart(`shroud${side}`, [sx, handY, gunZ - dims.len * 0.16], boxShape(sx, handY, gunZ - dims.len * 0.16, dims.rad * 1.35, dims.rad * 1.35, dims.len * 0.28), mixColor(col, '#0a0a0a', 0.2), { parent: `gun${side}` }));
+      }
+      if (st.rings) {
+        // 狙撃ビーム: 冷却リング×3(長銃身の記号)
+        for (let ri = 0; ri < 3; ri++) {
+          const rz = gunZ + dims.len * (0.02 + ri * 0.14);
+          parts.push(makePart(`ring${side}_${ri}`, [sx, handY, rz], prismShape([sx, handY, rz], AXIS_Z, 0.025, dims.rad + 0.05, dims.rad + 0.05, 8), mixColor(col, '#333333', 0.42), { parent: `gun${side}` }));
+        }
+      }
+      if (st.fins) {
+        // 中距離ビーム: エミッタ左右の放熱フィン
+        [1, -1].forEach((fs2) => {
+          const fx2 = sx + (dims.rad + 0.05) * fs2;
+          parts.push(makePart(`gfin${side}_${fs2}`, [fx2, handY, gunZ + dims.len * 0.1], boxShape(fx2, handY, gunZ + dims.len * 0.1, 0.03, dims.rad * 1.5, dims.len * 0.24), mixColor(col, '#000000', 0.38), { parent: `gun${side}` }));
+        });
+      }
+      if (st.tank) {
+        // 溶断バーナー: 燃料タンク(銃身上の小円筒)+ノズル余熱の発光
+        const ty2 = handY + dims.rad + 0.12;
+        parts.push(makePart(`fuel${side}`, [sx, ty2, gunZ - 0.05], prismShape([sx, ty2, gunZ - 0.05], AXIS_Z, dims.len * 0.3, 0.09, 0.09, 8), mixColor(col, '#000000', 0.3), { parent: `gun${side}` }));
+        parts.push(makePart(`pilot${side}`, [sx, handY, 0.1 + dims.len + 0.05], boxShape(sx, handY, 0.1 + dims.len + 0.05, 0.05, 0.05, 0.03), '#ffb04a', { parent: `gun${side}`, emissive: true }));
+      }
+      if (st.capacitor) {
+        // レールガン: 銃身下の蓄電器ブロック+充電灯
+        parts.push(makePart(`cap${side}`, [sx, handY - dims.rad - 0.14, gunZ - dims.len * 0.22], boxShape(sx, handY - dims.rad - 0.14, gunZ - dims.len * 0.22, 0.12, 0.13, dims.len * 0.2), mixColor(col, '#000000', 0.35), { parent: `gun${side}` }));
+        parts.push(makePart(`capLamp${side}`, [sx, handY - dims.rad - 0.14, gunZ - dims.len * 0.02], boxShape(sx, handY - dims.rad - 0.14, gunZ - dims.len * 0.02, 0.04, 0.04, 0.03), '#bff7ff', { parent: `cap${side}`, emissive: true }));
+      }
+      if (st.drum) {
+        // 散弾系: 銃身下の回転ドラム弾倉
+        const dy2 = handY - dims.rad - 0.12;
+        parts.push(makePart(`drum${side}`, [sx, dy2, gunZ - dims.len * 0.08], prismShape([sx, dy2, gunZ - dims.len * 0.08], AXIS_X, 0.1, 0.14, 0.14, 8), mixColor(col, '#000000', 0.35), { parent: `gun${side}` }));
+      }
+      if (st.ammoBox) {
+        // 機関砲: 給弾ボックス+ベルトの示唆
+        parts.push(makePart(`abox${side}`, [sx, handY - dims.rad - 0.16, gunZ - dims.len * 0.3], boxShape(sx, handY - dims.rad - 0.16, gunZ - dims.len * 0.3, 0.13, 0.15, 0.16), mixColor(col, '#000000', 0.3), { parent: `gun${side}` }));
+      }
     }
-    // 肩アーマー(得物共通。腕に追従)
-    parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.05, 0], boxShape(sx, shoulderY - 0.05, 0, 0.26, 0.16, 0.28), mixColor(col, '#000000', 0.18), { parent: armName }));
+    // 肩アーマー(装甲id別: 鋳鉄/重層=角張った大型 / 繊維/流体=丸パッド / 他=標準)
+    if (armorId === 'ar6' || armorId === 'ar3') {
+      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.02, 0], trapBoxY(sx, shoulderY - 0.02, 0, 0.2, 0.3, 0.32, 0.2, 0.24), mixColor(col, '#000000', 0.24), { parent: armName }));
+    } else if (armorId === 'ar5' || armorId === 'ar7') {
+      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.02, 0], octaShape(sx, shoulderY - 0.02, 0, 0.26), armorId === 'ar7' ? mixColor(col, '#bfe8ff', 0.2) : mixColor(col, '#ffffff', 0.12), { parent: armName }));
+    } else {
+      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.05, 0], boxShape(sx, shoulderY - 0.05, 0, 0.26, 0.16, 0.28), mixColor(col, '#000000', 0.18), { parent: armName }));
+    }
   });
 
   // 親子解決(名前 -> index)
@@ -727,7 +1099,7 @@ export function computeMechPose(mech, tSec) {
     leanX = -clampN(move.fwd, -1, 1) * 7 * DEG;
     rockAngle += clampN(move.lat, -1, 1) * 6 * DEG;
   }
-  const walker2 = mesh.legsKind === 'biped' || mesh.legsKind === 'quad';
+  const walker2 = mesh.legsKind === 'biped' || mesh.legsKind === 'quad' || mesh.legsKind === 'reverse';
   let gaitCycles = 0, footReach = 0, gaitStride = 1, travelX = forward3[0], travelZ = forward3[2];
   if (walker2) {
     const g = mesh._gait || (mesh._gait = { ph: 0, lx: null, lz: null, lt: null, dx: null, dz: null, legs: [] });
@@ -803,7 +1175,8 @@ export function computeMechPose(mech, tSec) {
 
   // ②(b) 踏み込みで胴が沈む上下動(接地の重み)+歩行中の屈み込み(膝を曲げIK到達域を確保)。歩容位相の2倍周期で沈む。
   if (alive && move && legged) {
-    if (walker2) originY -= footReach * GAIT_CROUCH * clamp01(move.mag);
+    // 逆関節は常時 REV_BEND ぶん低く構える(R_eff と対で膝の後折れを常に出す)
+    if (walker2) originY -= footReach * (GAIT_CROUCH * clamp01(move.mag) + (mesh.legsKind === 'reverse' ? REV_BEND : 0));
     const cyc2 = (walker2 ? gaitAng : wp * 1.4) * 2;
     originY += (Math.cos(cyc2) * 0.5 - 0.5) * 0.18 * move.mag;
   }
@@ -852,7 +1225,8 @@ export function computeMechPose(mech, tSec) {
       const reach = hip.pivot[1];                              // 股高
       const L1 = Math.max(0.05, hip.pivot[1] - knee.pivot[1]); // 腿長
       const L2 = Math.max(0.05, knee.pivot[1]);                // 脛長(膝→接地)
-      const R_eff = Math.max(0.15, reach * (1 - GAIT_CROUCH * strideMag) - actDip);   // 屈み込み+アクション沈み込み後の実効脚長(接地維持)
+      const crouchFrac = GAIT_CROUCH * strideMag + (mesh.legsKind === 'reverse' ? REV_BEND : 0);   // 逆関節は常時屈み
+      const R_eff = Math.max(0.15, reach * (1 - crouchFrac) - actDip);   // 屈み込み+アクション沈み込み後の実効脚長(接地維持)
       const hipWX = origin[0] + right3[0] * hip.pivot[0] + forward3[0] * hip.pivot[2];
       const hipWZ = origin[2] + right3[2] * hip.pivot[0] + forward3[2] * hip.pivot[2];
       let phi = (gaitCycles + (hip.swingPhase || 0) / (2 * Math.PI)) % 1;
@@ -971,11 +1345,11 @@ export function poseWorld(mech, tSec) {
     const wc = toWorld(transformThroughChain(mesh.parts, motions, pi, restC));
     parts.push({ name: part.name, world: wc, mass });
     cx += wc[0] * mass; cy += wc[1] * mass; cz += wc[2] * mass; cm += mass;
-    // 接地点: 足パーツ(biped/reverse=foot / quad=legL)の最下ワールド頂点
+    // 接地点: 足パーツ(biped=foot / quad・reverse=legL(脛=IK連鎖の終端が接地))の最下ワールド頂点
     const nm = part.name || '';
     let legIdx = -1;
     if (nm.indexOf('foot') === 0) legIdx = parseInt(nm.slice(4), 10);
-    else if (nm.indexOf('legL') === 0 && mesh.legsKind === 'quad') legIdx = parseInt(nm.slice(4), 10);
+    else if (nm.indexOf('legL') === 0 && (mesh.legsKind === 'quad' || mesh.legsKind === 'reverse')) legIdx = parseInt(nm.slice(4), 10);
     if (legIdx >= 0 && !isNaN(legIdx)) {
       let lo = null;
       for (const v of part.verts) {
@@ -998,19 +1372,617 @@ export function poseWorld(mech, tSec) {
   return { com, mass: cm, feet, parts, legsKind: mesh.legsKind, alive };
 }
 
-// ==================== createR3D ====================
+// ==================== 演出フェイス生成(両レンダラ共有・純関数群) ====================
+// 旧ソフトレンダラ(撤去済)のクロージャから module スコープへ純移動したもの。Three 版(r3d-three.js)が
+// 同じ関数から面リスト({verts,color,alpha,emissive,noCull,isLine})を受け取り描画する=演出の唯一の真実。
+function billboardRibbon(A, B, camForward, halfW) {
+  const dir = normalize(sub(B, A));
+  let side = cross(dir, camForward);
+  if (length(side) < 1e-5) side = [1, 0, 0]; else side = normalize(side);
+  const off = scaleV(side, halfW);
+  return [add(A, off), sub(A, off), sub(B, off), add(B, off)];
+}
+
+function billboardRibbonSimple(A, B, halfW) {
+  const dir = normalize(sub(B, A));
+  let side = cross(dir, WORLD_UP);
+  if (length(side) < 1e-5) side = [1, 0, 0]; else side = normalize(side);
+  const off = scaleV(side, halfW);
+  return [add(A, off), sub(A, off), sub(B, off), add(B, off)];
+}
+
+function thinQuadFromCenter(center, dirVec, size) {
+  const halfW = size * 0.12;
+  const A = sub(center, scaleV(dirVec, size));
+  const B = add(center, scaleV(dirVec, size));
+  let s = cross(dirVec, [0, 0, 1]);
+  s = length(s) < 1e-5 ? [1, 0, 0] : normalize(s);
+  const off = scaleV(s, halfW);
+  return [add(A, off), sub(A, off), sub(B, off), add(B, off)];
+}
+
+function pushMuzzleFlash(kind, center, size, alpha, out, right3, forward3) {
+  if (kind === 'shotgun') {
+    const spread = 5;
+    for (let i = 0; i < spread; i++) {
+      const t = (i / (spread - 1)) - 0.5;
+      const dir = normalize(add(scaleV(forward3, 1), scaleV(right3, t * 0.9)));
+      const tip = add(center, scaleV(dir, size * 1.4));
+      out.push({ verts: [center, add(center, scaleV(right3, 0.02)), tip], color: '#ffe9b0', alpha: alpha * 0.7, emissive: true, noCull: true });
+    }
+  } else {
+    out.push({ verts: thinQuadFromCenter(center, right3, size), color: '#fff7d8', alpha, emissive: true, noCull: true });
+    out.push({ verts: thinQuadFromCenter(center, [0, 1, 0], size), color: '#fff7d8', alpha, emissive: true, noCull: true });
+  }
+}
+
+// 姿勢適用+ワールド座標化(階層変換を経由)。out に face エントリを積む。
+// opts.effectsOnly=true で機体本体の面を出さず、付随演出(砂煙/くすぶり煙/マズルフラッシュ/刃の軌跡/
+// ポッド噴煙)だけを積む(Three 版は本体を Object3D 木で描くため演出のみ受け取る=演出の唯一の真実を共有)。
+export function poseMechFaces(mech, tSec, out, opts) {
+  const P = computeMechPose(mech, tSec);   // 歩容/IK/姿勢は純関数へ抽出(Three.js版と共有)
+  if (!P) return;
+  const { mesh, alive, wp, attack, move, legged, walker2,
+    forward3, right3, idxHash, flash01, origin, tiltX, rockAngle, gaitAng, motions } = P;
+
+  // ②(d) 足元の砂煙: 接地する足の後方へ淡い塵を上げる(重量物が地面を蹴る感)。歩調に同期し左右交互。
+  if (alive && move && legged && move.mag > 0.28) {
+    const lat = (mesh.legsKind === 'quad' ? 0.55 : 0.42) * MECH_SCALE;
+    for (const s of [1, -1]) {
+      const strike = Math.max(0, -Math.cos((walker2 ? gaitAng : wp * 1.4) + (s > 0 ? 0 : Math.PI)));  // 脚が後方=接地でピーク
+      if (strike < 0.35) continue;
+      const base = add([mech.x || 0, 0, mech.y || 0], add(scaleV(right3, lat * s), scaleV(forward3, -0.3 * MECH_SCALE)));
+      const r = (0.25 + (1 - strike) * 0.5) * MECH_SCALE;   // 接地直後は小さく→広がる
+      const sh = octaShape(base[0], 0.12 + r * 0.3, base[2], r);
+      const a = strike * 0.22 * move.mag;
+      sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: '#8f8676', alpha: a, emissive: false, noCull: true }));
+    }
+  }
+
+  const toWorld = (p) => {
+    let pp = p;
+    if (tiltX) pp = rotateAroundAxis(pp, AXIS_X, tiltX);
+    if (rockAngle) pp = rotateAroundAxis(pp, AXIS_Z, rockAngle);
+    return add(origin, add(scaleV(right3, pp[0]), add([0, pp[1], 0], scaleV(forward3, pp[2]))));
+  };
+
+  if (!(opts && opts.effectsOnly)) mesh.parts.forEach((part, pi) => {
+    const mo = motions[pi];
+    if (mo.hide) return;
+    const color = !alive ? mixColor(part.color, '#0a0a0a', 0.65)
+      : (flash01 > 0.01 ? mixColor(part.color, '#ffffff', Math.min(0.8, flash01)) : part.color);
+    for (const face of part.faces) {
+      const verts = face.map((vi) => {
+        const restPoint = add(part.verts[vi], part.pivot);
+        const p = transformThroughChain(mesh.parts, motions, pi, restPoint);
+        return toWorld(p);
+      });
+      out.push({ verts, color, emissive: part.emissive, glowSeed: idxHash });
+    }
+  });
+
+  // ② 撃破機のくすぶり煙: 横倒しした胴の「実際の位置」から立ち上げる(toWorldがロール/持上げ込みで
+  //    胴中心を返すので、機体外にズレない)。tSecで位相をずらし絶やさない。
+  if (!alive && mech.smolder) {
+    const torsoIdx = mesh.parts.findIndex((p) => p.name === 'torso');
+    if (torsoIdx >= 0) {
+      const base = toWorld(transformThroughChain(mesh.parts, motions, torsoIdx, mesh.parts[torsoIdx].pivot));
+      for (let k = 0; k < 3; k++) {
+        const ph = (tSec * 0.4 + k / 3) % 1;
+        const r = (0.5 + ph * 1.4) * MECH_SCALE;
+        const dy = ph * 2.4 * MECH_SCALE;              // 立ち上る
+        const sway = (hash(k * 4.3 + idxHash) - 0.5) * 0.8 * MECH_SCALE;
+        const cx = base[0] + sway, cz = base[2] + (hash(k * 2.1 + idxHash) - 0.5) * 0.8 * MECH_SCALE;
+        const a = Math.max(0, (1 - ph) * 0.5);
+        if (a <= 0.02) continue;
+        const sh = octaShape(cx, base[1] + dy, cz, Math.max(0.05, r));
+        const v = Math.round(46 + ph * 26);
+        sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: `rgb(${v},${v},${v + 2})`, alpha: a, emissive: false, noCull: true }));
+      }
+    }
+  }
+
+  // --- 攻撃モーションの追加演出(マズルフラッシュ/刃の軌跡/噴煙) ---
+  if (alive && attack) {
+    mesh.parts.forEach((part, pi) => {
+      if (!part.role || !matchesAttack(part, attack)) return;
+      const age = clamp01(attack.age01 == null ? 0 : attack.age01);
+      if (part.role === 'muzzle' && (attack.kind === 'rifle' || attack.kind === 'shotgun' || attack.kind === 'railgun') && age < 0.22) {
+        const wp0 = toWorld(transformThroughChain(mesh.parts, motions, pi, part.pivot));
+        const size = (attack.kind === 'railgun' ? 0.9 : attack.kind === 'shotgun' ? 0.7 : 0.5) * MECH_SCALE;
+        const a = 1 - age / 0.22;
+        pushMuzzleFlash(attack.kind, wp0, size, a, out, right3, forward3);
+      } else if (part.role === 'hilt' && attack.kind === 'blade') {
+        // 刃の軌跡(扇形の半透明ポリ): 現在の刃先とその手前角度を結ぶ簡易な扇
+        const bladeIdx = mesh.parts.findIndex((p2) => p2.parentName === part.name && p2.role === 'blade');
+        if (bladeIdx >= 0) {
+          const bp = mesh.parts[bladeIdx];
+          let farVi = 0, farD = -1;
+          bp.verts.forEach((v, i) => { const d = length(v); if (d > farD) { farD = d; farVi = i; } });
+          const tipRest = add(bp.verts[farVi], bp.pivot);
+          const tipWorld = toWorld(transformThroughChain(mesh.parts, motions, bladeIdx, tipRest));
+          const hiltWorld = toWorld(transformThroughChain(mesh.parts, motions, pi, part.pivot));
+          const sweepSign = (part.side || 1) >= 0 ? 1 : -1;
+          const prevOffset = rotateAroundAxis(sub(tipWorld, hiltWorld), AXIS_Y, -0.4 * sweepSign);
+          const p0 = add(hiltWorld, prevOffset);
+          const alpha = Math.max(0, 0.55 * (1 - Math.abs(age - 0.5) * 1.6));
+          if (alpha > 0) out.push({ verts: [hiltWorld, p0, tipWorld], color: '#bff7ff', alpha, emissive: true, noCull: true });
+        }
+      } else if (part.role === 'pod' && attack.kind === 'missile') {
+        const base = toWorld(transformThroughChain(mesh.parts, motions, pi, part.pivot));
+        for (let i = 0; i < 3; i++) {
+          const puffAge = clamp01(age + i * 0.08);
+          const hn = hash(i * 7.7 + Math.floor(puffAge * 20) * 1.3);
+          const r = (0.15 + puffAge * 0.6) * MECH_SCALE;
+          const dy = (puffAge * 0.8 + hn * 0.2) * MECH_SCALE;
+          const spread = 0.4 * MECH_SCALE;
+          const cx2 = base[0] + (hn - 0.5) * spread, cz2 = base[2] + (hash(hn * 3.1) - 0.5) * spread;
+          const shape = octaShape(cx2, base[1] + dy, cz2, Math.max(0.05, r));
+          const a = Math.max(0, (1 - puffAge) * 0.5);
+          if (a > 0) shape.faces.forEach((f) => out.push({ verts: f.map((vi2) => shape.verts[vi2]), color: '#c9d4d8', alpha: a, emissive: false, noCull: true }));
+        }
+      }
+    });
+  }
+}
+
+// ---- SHOT_STYLES: 弾種(kind)ごとの描き分け。各関数は (age,A,B,cam,out,si) を受け、
+// A=発射点/B=着弾点(shotY固定高さ)。si=scene.shots内のindex(決定論ハッシュのシード用)。
+const SHOT_STYLES = {
+  rifle(age, A, B, cam, out) {
+    // 黄橙の短いトレーサー
+    const p1 = lerpP(A, B, age);
+    const p0 = lerpP(A, B, Math.max(0, age - 0.045));
+    out.push({ verts: billboardRibbon(p0, p1, cam.forward, 0.09 * MECH_SCALE), color: '#ffcf6a', alpha: 0.92, emissive: true });
+  },
+  shotgun(age, A, B, cam, out, si) {
+    // 橙の粒が円錐状に散開(複数点)
+    let fwd = normalize(sub(B, A));
+    if (length(fwd) < 1e-5) fwd = [0, 0, 1];
+    let right3 = cross(fwd, WORLD_UP);
+    right3 = length(right3) < 1e-5 ? [1, 0, 0] : normalize(right3);
+    const up3 = normalize(cross(right3, fwd));
+    const p1 = lerpP(A, B, age);
+    const spread = (0.3 + age * 1.5) * MECH_SCALE;
+    const n = 5;
+    for (let i = 0; i < n; i++) {
+      const hn = hash(si * 7.13 + i * 3.71 + 0.4);
+      const hn2 = hash(si * 11.7 + i * 5.13 + 1.9);
+      const ang = hn * Math.PI * 2;
+      const rad = (0.25 + hn2 * 0.85) * spread;
+      const along = (hn2 - 0.5) * 0.18 * MECH_SCALE;
+      const pos = add(add(p1, scaleV(right3, Math.cos(ang) * rad)), add(scaleV(up3, Math.sin(ang) * rad), scaleV(fwd, along)));
+      const size = 0.06 * MECH_SCALE;
+      out.push({ verts: thinQuadFromCenter(pos, right3, size), color: '#ff9a4a', alpha: Math.max(0, 0.85 * (1 - age * 0.6)), emissive: true, noCull: true });
+    }
+  },
+  beam(age, A, B, cam, out) {
+    // 翠白の連続光条: コア(細く明るい)+外周グロー(太く淡い)
+    const a = 1 - age;
+    if (a <= 0) return;
+    out.push({ verts: billboardRibbon(A, B, cam.forward, 0.16 * MECH_SCALE), color: '#eafff5', alpha: a, emissive: true });
+    out.push({ verts: billboardRibbon(A, B, cam.forward, 0.55 * MECH_SCALE), color: '#7dffcf', alpha: a * 0.32, emissive: true });
+  },
+  railgun(age, A, B, cam, out) {
+    // 青白の細長いストリーク(高速で先行)+通過後の残光(全経路がうっすら光る)
+    const travelT = Math.min(1, age * 1.6);
+    const head = lerpP(A, B, travelT);
+    const tail = lerpP(A, B, Math.max(0, travelT - 0.12));
+    out.push({ verts: billboardRibbon(tail, head, cam.forward, 0.05 * MECH_SCALE), color: '#cfe8ff', alpha: 0.95, emissive: true });
+    const glowA = Math.max(0, Math.min(1, (age - 0.12) * 1.4)) * Math.max(0, 1 - age);
+    if (glowA > 0.02) out.push({ verts: billboardRibbon(A, B, cam.forward, 0.03 * MECH_SCALE), color: '#8fd0ff', alpha: glowA * 0.5, emissive: true });
+  },
+  missile(age, A, B, cam, out, si) {
+    // ⑥ ロケット化: 金属の弾体+発光する噴射炎(ちらつき)+後方に膨張しながら漂う白煙トレイル。
+    const pos = lerpP(A, B, age);
+    let dir = normalize(sub(B, A));
+    if (length(dir) < 1e-5) dir = [0, 0, 1];
+    const bodyHalf = 0.22 * MECH_SCALE;
+    const nose = add(pos, scaleV(dir, bodyHalf));
+    const tail = add(pos, scaleV(dir, -bodyHalf));
+    // 噴射炎(発光・フレーム毎にちらつく)
+    const flick = 0.6 + hash(si * 5.1 + Math.floor(age * 40) * 1.7) * 0.7;
+    const flameEnd = add(tail, scaleV(dir, -0.55 * MECH_SCALE * flick));
+    out.push({ verts: billboardRibbon(tail, flameEnd, cam.forward, 0.15 * MECH_SCALE), color: '#ffcf4a', alpha: 0.85, emissive: true });
+    out.push({ verts: billboardRibbon(tail, add(tail, scaleV(dir, -0.28 * MECH_SCALE * flick)), cam.forward, 0.09 * MECH_SCALE), color: '#fff7d6', alpha: 0.95, emissive: true });
+    // 弾体(金属)+弾頭(明色)
+    out.push({ verts: billboardRibbon(tail, nose, cam.forward, 0.1 * MECH_SCALE), color: '#b9c0c6', alpha: 1, emissive: false });
+    out.push({ verts: billboardRibbon(add(pos, scaleV(dir, bodyHalf * 0.4)), nose, cam.forward, 0.1 * MECH_SCALE), color: '#e9edf0', alpha: 1, emissive: false });
+    // 白煙トレイル(長め・膨張・漂い)
+    for (let i = 1; i <= 6; i++) {
+      const t = age - i * 0.05;
+      if (t < 0) break;
+      const tp = lerpP(A, B, t);
+      const drift = (hash(si * 3.3 + i * 2.7) - 0.5) * 0.35 * MECH_SCALE;
+      const r = (0.12 + i * 0.07) * MECH_SCALE;
+      const a = 0.5 * (1 - i / 7);
+      const sh = octaShape(tp[0] + drift, tp[1] + i * 0.05 * MECH_SCALE, tp[2] + drift, r);
+      sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: '#c8ccd0', alpha: a, emissive: false, noCull: true }));
+    }
+  },
+  rocketpunch(age, A, B, cam, out, si) {
+    // 回転しながら飛ぶ小さな拳型ブロック
+    const p1 = lerpP(A, B, age);
+    const p0 = lerpP(A, B, Math.max(0, age - 0.06));
+    out.push({ verts: billboardRibbon(p0, p1, cam.forward, 0.14 * MECH_SCALE), color: '#c7d0d4', alpha: 0.9, emissive: false });
+    let dirv = normalize(sub(B, A));
+    if (length(dirv) < 1e-5) dirv = [0, 0, 1];
+    const spinAngle = age * 10 + si * 1.7;
+    const boxHalf = 0.22 * MECH_SCALE;
+    const box = boxShape(p1[0], p1[1], p1[2], boxHalf, boxHalf * 0.85, boxHalf * 1.35);
+    const rotVerts = box.verts.map((v) => add(p1, rotateAroundAxis(sub(v, p1), dirv, spinAngle)));
+    box.faces.forEach((f) => out.push({ verts: f.map((vi) => rotVerts[vi]), color: '#9aa4a8', alpha: 1, emissive: false }));
+  },
+  blade(age, A, B, cam, out) {
+    // 既存の斬閃(短いトレーサー)を維持
+    const p1 = lerpP(A, B, age);
+    const p0 = lerpP(A, B, Math.max(0, age - 0.06));
+    out.push({ verts: billboardRibbon(p0, p1, cam.forward, 0.12 * MECH_SCALE), color: '#dfffef', alpha: 0.9 * (1 - age * 0.3), emissive: true });
+  },
+  drill(age, A, B, cam, out) {
+    // 既存の回転演出(トレーサー+芯のブロック)を維持
+    const p1 = lerpP(A, B, age);
+    const p0 = lerpP(A, B, Math.max(0, age - 0.06));
+    out.push({ verts: billboardRibbon(p0, p1, cam.forward, 0.16 * MECH_SCALE), color: '#4a4a4a', alpha: 0.95, emissive: false });
+    const shape = octaShape(p1[0], p1[1], p1[2], 0.22 * MECH_SCALE);
+    shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#2e2e2e', alpha: 1, emissive: false }));
+  },
+};
+
+export function shotWorldFaces(scene, cam, out) {
+  (scene.shots || []).forEach((s, si) => {
+    const age = clamp01(s.age01 == null ? 0 : s.age01);
+    // ⑤ 発射=マズル高さ、着弾=被弾部位高さへ斜めに。地面すれすれの水平飛翔を解消。
+    const srcY = s.y0 != null ? s.y0 : MUZZLE_Y;
+    const dstY = s.y1 != null ? s.y1 : hitPartY(s.kind, si, s.tx, s.ty);
+    const A = [s.x, srcY, s.y];
+    const B = [s.tx, dstY, s.ty];
+    const style = SHOT_STYLES[s.kind] || SHOT_STYLES.rifle;
+    style(age, A, B, cam, out, si);
+  });
+}
+
+export function blastWorldFaces(scene, out, tSec) {
+  (scene.blasts || []).forEach((b, bi) => {
+    const age = clamp01(b.age01 == null ? 0 : b.age01);
+    const kind = b.kind || (b.big ? 'boom' : 'hit');
+    if (kind === 'smoke') {
+      // くすぶる残骸の煙: age01で上昇+拡散+フェード(釣鐘状=sin(age*PI))。決定論のちらつき火花付き。
+      // 半径・上昇量・火花サイズはレビュー9巡目で×1.5(敗北の余韻を強く)。
+      const cx = b.x, cz = b.y;
+      const seed = bi * 13.7 + cx * 0.021 + cz * 0.019;
+      const riseAmt = 3.9 * MECH_SCALE;
+      const cy = (0.5 + riseAmt * age) * MECH_SCALE;
+      const baseR = 0.45 * MECH_SCALE;
+      const growR = 1.575 * MECH_SCALE;
+      const r = baseR + growR * age;
+      const bell = Math.max(0, Math.sin(Math.min(1, age) * Math.PI));
+      const alpha = bell * 0.4;
+      const driftX = (hash(seed) - 0.5) * 0.7 * MECH_SCALE * age;
+      const driftZ = (hash(seed * 1.7) - 0.5) * 0.7 * MECH_SCALE * age;
+      if (alpha > 0.003) {
+        const shape = octaShape(cx + driftX, cy, cz + driftZ, Math.max(0.04 * MECH_SCALE, r));
+        const shadeV = Math.round(58 + bell * 22);
+        const smokeCol = `rgba(${shadeV},${shadeV},${shadeV + 2},1)`;
+        shape.faces.forEach((f) => out.push({ verts: f.map((vi) => shape.verts[vi]), color: smokeCol, alpha, noCull: true }));
+      }
+      // 時々の火花のちらつき(高周波sin、決定論。age前半のみ・煙の根元付近で明滅)
+      if (age < 0.55) {
+        const flick = Math.sin((tSec || 0) * 23 + seed) * 0.5 + 0.5;
+        const sparkA = Math.max(0, (flick - 0.7) / 0.3) * (1 - age / 0.55) * 0.85;
+        if (sparkA > 0.01) {
+          const sy = 0.35 * MECH_SCALE + riseAmt * age * MECH_SCALE * 0.15;
+          const sshape = octaShape(cx + driftX * 0.4, sy, cz + driftZ * 0.4, 0.09 * MECH_SCALE);
+          sshape.faces.forEach((f) => out.push({ verts: f.map((vi) => sshape.verts[vi]), color: '#ffa050', alpha: sparkA, emissive: true, noCull: true }));
+        }
+      }
+      return;
+    }
+    if (kind === 'parry') {
+      const cx = b.x, cz = b.y;
+      const cy = 2.6 * MECH_SCALE;
+      const ang0 = hash(cx * 0.13 + cz * 0.07) * Math.PI * 2;
+      const arc = 0.9;
+      const r = (1.2 + 3.2 * (1 - (1 - age) * (1 - age))) * MECH_SCALE;
+      const alpha = Math.max(0, 1 - age * 1.4);
+      const segs = 8;
+      for (let i = 0; i < segs; i++) {
+        const a0 = ang0 - arc / 2 + (i / segs) * arc;
+        const a1 = ang0 - arc / 2 + ((i + 1) / segs) * arc;
+        const p0 = [cx + Math.cos(a0) * r, cy, cz + Math.sin(a0) * r];
+        const p1 = [cx + Math.cos(a1) * r, cy, cz + Math.sin(a1) * r];
+        out.push({ verts: [[cx, cy, cz], p0, p1], color: '#eaffff', alpha: alpha * 0.6, emissive: true, noCull: true });
+      }
+      return;
+    }
+    if (kind === 'hit') {
+      const wpn = b.wpn;
+      if (wpn === 'rifle' || wpn === 'shotgun') hitSpark(b, bi, age, out);
+      else if (wpn === 'beam') hitBeam(b, age, out);
+      else if (wpn === 'railgun') hitRailgun(b, bi, age, out);
+      else if (wpn === 'missile') hitMissile(b, bi, age, out);
+      else if (wpn === 'blade' || wpn === 'drill') hitSlashArc(b, age, out);
+      else if (wpn === 'rocketpunch') hitRocketpunch(b, age, out);
+      else hitGeneric(b, bi, age, out); // wpn不明時は従来の汎用hit
+      return;
+    }
+    // kind === 'boom'(撃破・障害物破壊): 従来どおり不変
+    const maxR = 7 * MECH_SCALE;
+    const r = maxR * (1 - (1 - age) * (1 - age));
+    const cx = b.x, cz = b.y;
+    const cy = 1 * MECH_SCALE + r * 0.4;
+    const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, r));
+    const alpha = Math.max(0, 1 - age);
+    shape.faces.forEach((f) => {
+      out.push({ verts: f.map((i) => shape.verts[i]), color: '#ffd9a0', alpha: alpha * 0.85, emissive: true });
+    });
+    const segs = 10;
+    const groundY = 0.05 * MECH_SCALE;
+    for (let i = 0; i < segs; i++) {
+      const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
+      const gr = r * 1.3;
+      out.push({
+        verts: [[cx, groundY, cz], [cx + Math.cos(a0) * gr, groundY, cz + Math.sin(a0) * gr], [cx + Math.cos(a1) * gr, groundY, cz + Math.sin(a1) * gr]],
+        color: '#ffb060', alpha: alpha * 0.3, emissive: true, noCull: true,
+      });
+    }
+    const debN = 6;
+    for (let i = 0; i < debN; i++) {
+      const hn = hash(bi * 13.1 + i * 5.3 + age * 0.01);
+      const ang = hn * Math.PI * 2;
+      const el = 0.3 + hash(hn * 9.9) * 0.6;
+      const len = (0.5 + hash(hn * 3.3) * 1.5) * age * MECH_SCALE;
+      const dir = [Math.cos(ang), el, Math.sin(ang)];
+      const start = [cx, cy, cz];
+      const end = add(start, scaleV(dir, len * 3));
+      out.push({ verts: billboardRibbonSimple(start, end, 0.05 * MECH_SCALE), color: '#ffe0b0', alpha: alpha * 0.7, emissive: true });
+    }
+  });
+}
+
+// ---- 着弾(kind==='hit')の武器別演出。b={x,y,wpn,age01} ----
+function hitSpark(b, bi, age, out) {
+  // 実弾系(rifle/shotgun)=小さな火花
+  const cx = b.x, cz = b.y, cy = 1.0 * MECH_SCALE;
+  const alpha = Math.max(0, 1 - age * 1.6);
+  if (alpha <= 0) return;
+  const n = 5;
+  for (let i = 0; i < n; i++) {
+    const hn = hash(bi * 9.3 + i * 4.7 + 0.2);
+    const ang = hn * Math.PI * 2;
+    const el = 0.2 + hash(hn * 3.1) * 0.5;
+    const len = (0.15 + hash(hn * 7.7) * 0.35) * (0.3 + age * 1.4) * MECH_SCALE;
+    const dir = [Math.cos(ang), el, Math.sin(ang)];
+    const end = add([cx, cy, cz], scaleV(dir, len));
+    out.push({ verts: billboardRibbonSimple([cx, cy, cz], end, 0.025 * MECH_SCALE), color: '#fff2c0', alpha, emissive: true });
+  }
+}
+function hitBeam(b, age, out) {
+  // beam=白熱の閃光(短)
+  const a = Math.max(0, 1 - age * 2.2);
+  if (a <= 0) return;
+  const cx = b.x, cz = b.y, cy = 1.2 * MECH_SCALE;
+  const r = (0.35 + age * 0.3) * MECH_SCALE;
+  const shape = octaShape(cx, cy, cz, r);
+  shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#f2fff8', alpha: a * 0.95, emissive: true }));
+}
+function hitRailgun(b, bi, age, out) {
+  // railgun=大きな貫通スパーク+金属片
+  const cx = b.x, cz = b.y, cy = 1.1 * MECH_SCALE;
+  const r = 1.6 * MECH_SCALE * (1 - (1 - age) * (1 - age));
+  const alpha = Math.max(0, 1 - age);
+  const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, r * 0.4));
+  shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#dff2ff', alpha: alpha * 0.9, emissive: true }));
+  const debN = 6;
+  for (let i = 0; i < debN; i++) {
+    const hn = hash(bi * 17.3 + i * 6.1 + 0.5);
+    const ang = hn * Math.PI * 2;
+    const el = 0.1 + hash(hn * 5.3) * 0.4;
+    const len = (1.0 + hash(hn * 2.9) * 1.6) * age * MECH_SCALE;
+    const dir = [Math.cos(ang), el, Math.sin(ang)];
+    const end = add([cx, cy, cz], scaleV(dir, len));
+    out.push({ verts: billboardRibbonSimple([cx, cy, cz], end, 0.045 * MECH_SCALE), color: '#b9d6e6', alpha: alpha * 0.85, emissive: true });
+  }
+}
+function hitMissile(b, bi, age, out) {
+  // missile=火球+煙の輪(b.scale=掠り時の縮小。既定1)
+  const sc = b.scale || 1;
+  const cx = b.x, cz = b.y;
+  const maxR = 3.4 * MECH_SCALE * sc;
+  const r = maxR * (1 - (1 - age) * (1 - age));
+  const cy = 1 * MECH_SCALE + r * 0.35;
+  const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, r));
+  const alpha = Math.max(0, 1 - age);
+  shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#ffc27a', alpha: alpha * 0.85, emissive: true }));
+  const ringR = (0.6 + age * 2.2) * MECH_SCALE;
+  const ringY = cy + (0.4 + age * 0.6) * MECH_SCALE;
+  const ringA = Math.max(0, 1 - age) * 0.4;
+  if (ringA > 0.01) {
+    const segs = 12;
+    for (let i = 0; i < segs; i++) {
+      const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
+      const p0 = [cx + Math.cos(a0) * ringR, ringY, cz + Math.sin(a0) * ringR];
+      const p1 = [cx + Math.cos(a1) * ringR, ringY, cz + Math.sin(a1) * ringR];
+      out.push({ isLine: true, verts: [p0, p1], color: `rgba(210,210,214,${ringA.toFixed(3)})` });
+    }
+  }
+  const segs2 = 10, groundY = 0.05 * MECH_SCALE, gr = r * 1.3;
+  for (let i = 0; i < segs2; i++) {
+    const a0 = (i / segs2) * Math.PI * 2, a1 = ((i + 1) / segs2) * Math.PI * 2;
+    out.push({
+      verts: [[cx, groundY, cz], [cx + Math.cos(a0) * gr, groundY, cz + Math.sin(a0) * gr], [cx + Math.cos(a1) * gr, groundY, cz + Math.sin(a1) * gr]],
+      color: '#ffb060', alpha: alpha * 0.3, emissive: true, noCull: true,
+    });
+  }
+}
+function hitSlashArc(b, age, out) {
+  // blade・drill=斬撃アーク(弧状の光。既存parryと同系の弧描画を流用)
+  const cx = b.x, cz = b.y, cy = 2.4 * MECH_SCALE;
+  const ang0 = hash(cx * 0.13 + cz * 0.07 + 5.5) * Math.PI * 2;
+  const arc = 1.1;
+  const r = (1.0 + 3.0 * (1 - (1 - age) * (1 - age))) * MECH_SCALE;
+  const alpha = Math.max(0, 1 - age * 1.5);
+  const segs = 8;
+  for (let i = 0; i < segs; i++) {
+    const a0 = ang0 - arc / 2 + (i / segs) * arc;
+    const a1 = ang0 - arc / 2 + ((i + 1) / segs) * arc;
+    const p0 = [cx + Math.cos(a0) * r, cy, cz + Math.sin(a0) * r];
+    const p1 = [cx + Math.cos(a1) * r, cy, cz + Math.sin(a1) * r];
+    out.push({ verts: [[cx, cy, cz], p0, p1], color: '#eafcff', alpha: alpha * 0.55, emissive: true, noCull: true });
+  }
+}
+function hitRocketpunch(b, age, out) {
+  // rocketpunch=衝撃リング
+  const cx = b.x, cz = b.y, cy = 1.3 * MECH_SCALE;
+  const r = (0.3 + age * 3.0) * MECH_SCALE;
+  const alpha = Math.max(0, 1 - age * 1.3);
+  if (alpha <= 0) return;
+  const segs = 14;
+  for (let i = 0; i < segs; i++) {
+    const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
+    const p0 = [cx + Math.cos(a0) * r, cy, cz + Math.sin(a0) * r];
+    const p1 = [cx + Math.cos(a1) * r, cy, cz + Math.sin(a1) * r];
+    out.push({ isLine: true, verts: [p0, p1], color: `rgba(230,236,238,${(alpha * 0.8).toFixed(3)})` });
+  }
+  const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, 0.5 * MECH_SCALE * (1 - age)));
+  shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#eef0f2', alpha: Math.max(0, 1 - age * 2) * 0.8, emissive: true }));
+}
+function hitGeneric(b, bi, age, out) {
+  // wpn不明時: 従来の汎用hit(旧・boom/hit共通コードのhit版=maxR3.2・debN3)をそのまま踏襲
+  const maxR = 3.2 * MECH_SCALE;
+  const r = maxR * (1 - (1 - age) * (1 - age));
+  const cx = b.x, cz = b.y;
+  const cy = 1 * MECH_SCALE + r * 0.4;
+  const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, r));
+  const alpha = Math.max(0, 1 - age);
+  shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#ffd9a0', alpha: alpha * 0.85, emissive: true }));
+  const segs = 10, groundY = 0.05 * MECH_SCALE, gr = r * 1.3;
+  for (let i = 0; i < segs; i++) {
+    const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
+    out.push({
+      verts: [[cx, groundY, cz], [cx + Math.cos(a0) * gr, groundY, cz + Math.sin(a0) * gr], [cx + Math.cos(a1) * gr, groundY, cz + Math.sin(a1) * gr]],
+      color: '#ffb060', alpha: alpha * 0.3, emissive: true, noCull: true,
+    });
+  }
+  const debN = 3;
+  for (let i = 0; i < debN; i++) {
+    const hn = hash(bi * 13.1 + i * 5.3 + age * 0.01);
+    const ang = hn * Math.PI * 2;
+    const el = 0.3 + hash(hn * 9.9) * 0.6;
+    const len = (0.5 + hash(hn * 3.3) * 1.5) * age * MECH_SCALE;
+    const dir = [Math.cos(ang), el, Math.sin(ang)];
+    const end = add([cx, cy, cz], scaleV(dir, len * 3));
+    out.push({ verts: billboardRibbonSimple([cx, cy, cz], end, 0.05 * MECH_SCALE), color: '#ffe0b0', alpha: alpha * 0.7, emissive: true });
+  }
+}
+
+// 障害物(scene.obstacles): wall=岩柱(alive/hpFracで劣化・瓦礫化)/ mud=暗色円盤 / spike=錐クラスタ
+export function obstacleWorldFaces(scene, out) {
+  (scene.obstacles || []).forEach((o) => {
+    if (o.kind === 'wall') {
+      const alive = o.alive !== false;
+      const hpFrac = o.hpFrac == null ? 1 : o.hpFrac;
+      const seed = o.x * 0.31 + o.y * 0.17;
+      const sides = 5 + Math.floor(hash(seed) * 4);
+      const hgtFull = 12 + hash(seed * 1.7) * 8;
+      const hgt = alive ? hgtFull : hgtFull * 0.16;
+      const rTop = o.r * (alive ? 0.82 : 1.1);
+      const cy = hgt / 2;
+      const jitterAmp = alive ? 0 : o.r * 0.55;
+      const jitterFn = jitterAmp ? (i) => (hash(seed + i * 3.3) - 0.5) * jitterAmp : null;
+      const shape = prismShape([o.x, cy, o.y], AXIS_Y, hgt / 2, rTop, o.r, sides, { jitter: jitterFn });
+      const baseColor = alive ? '#5c5850' : '#38352f';
+      const col2 = mixColor(baseColor, '#151310', (1 - hpFrac) * 0.5);
+      shape.faces.forEach((f) => out.push({ verts: f.map((vi) => shape.verts[vi]), color: col2, alpha: 1 }));
+      if (alive && hpFrac < 0.999) {
+        for (let c = 0; c < 2; c++) {
+          const a = hash(seed * 5.1 + c * 9.3) * Math.PI * 2;
+          const top = [o.x + Math.cos(a) * o.r * 0.7, hgt * (0.4 + c * 0.3), o.y + Math.sin(a) * o.r * 0.7];
+          const bot = [o.x + Math.cos(a) * o.r * 0.9, 0.2, o.y + Math.sin(a) * o.r * 0.9];
+          out.push({ isLine: true, verts: [top, bot], color: 'rgba(10,10,8,0.7)' });
+        }
+      }
+    } else if (o.kind === 'mud') {
+      // ④ 泥地(沼): 地面より明度・彩度を上げた濁った緑褐色の水面+油膜の同心リング+泡+光る外縁で
+      //    「足を取る危険な水場」と一目で分かるように(暗い夜テーマでも沈まない)。
+      if (o.alive === false) return;
+      const sides = 12;
+      const seed = o.x * 0.21 + o.y * 0.29;
+      const verts = [];
+      for (let i = 0; i < sides; i++) {
+        const a = (i / sides) * Math.PI * 2;
+        const jitter = 0.78 + hash(seed + i * 4.1) * 0.36;
+        verts.push([o.x + Math.cos(a) * o.r * jitter, 0.05, o.y + Math.sin(a) * o.r * jitter]);
+      }
+      // 巨大な1枚面は、機体が沼内に入りカメラが近づくと手前側頂点がカメラ背後へ回り近クリップで
+      // 面全体が消える。中心からの三角形ファンに分割し、背後の三角だけがクリップされるようにする。
+      const mudCenter = [o.x, 0.05, o.y];
+      for (let i = 0; i < sides; i++) {
+        out.push({ verts: [mudCenter, verts[i], verts[(i + 1) % sides]], color: '#2c3320', alpha: 0.92, noCull: true });
+      }
+      // 油膜の同心リング(2重)
+      for (let ring = 1; ring <= 2; ring++) {
+        const rr = o.r * (0.38 + ring * 0.28);
+        const rv = [];
+        for (let i = 0; i < sides; i++) {
+          const a = (i / sides) * Math.PI * 2;
+          rv.push([o.x + Math.cos(a) * rr, 0.07, o.y + Math.sin(a) * rr]);
+        }
+        const rc = ring === 1 ? 'rgba(130,160,85,0.42)' : 'rgba(95,125,72,0.28)';
+        for (let i = 0; i < sides; i++) out.push({ isLine: true, verts: [rv[i], rv[(i + 1) % sides]], color: rc });
+      }
+      // 光る外縁
+      for (let i = 0; i < sides; i++) {
+        const p0 = verts[i], p1 = verts[(i + 1) % sides];
+        out.push({ isLine: true, verts: [add(p0, [0, 0.02, 0]), add(p1, [0, 0.02, 0])], color: 'rgba(175,185,115,0.5)' });
+      }
+      // 泡(小さな明点)
+      for (let i = 0; i < 3; i++) {
+        const hn = hash(seed * 2.3 + i * 5.7);
+        const ba = hn * Math.PI * 2, br = hash(hn + i) * o.r * 0.68;
+        const sh = octaShape(o.x + Math.cos(ba) * br, 0.12, o.y + Math.sin(ba) * br, 0.16 + hash(hn * 3.1) * 0.12);
+        sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: '#4a5535', alpha: 0.9 }));
+      }
+    } else if (o.kind === 'spike') {
+      // ④ 茨(トゲ): 高く鋭い暗色の錐+光る危険色の先端+赤茶の警告リングで「踏むと痛い」を明示。
+      if (o.alive === false) return;
+      const seed = o.x * 0.37 + o.y * 0.13;
+      const n = 6 + Math.floor(hash(seed) * 5);
+      // 危険域の警告リング
+      const rs = 14, rv = [];
+      for (let i = 0; i < rs; i++) {
+        const a = (i / rs) * Math.PI * 2;
+        rv.push([o.x + Math.cos(a) * o.r, 0.06, o.y + Math.sin(a) * o.r]);
+      }
+      for (let i = 0; i < rs; i++) out.push({ isLine: true, verts: [rv[i], rv[(i + 1) % rs]], color: 'rgba(205,72,40,0.5)' });
+      for (let i = 0; i < n; i++) {
+        const hn = hash(seed + i * 11.3);
+        const ang = hn * Math.PI * 2;
+        const rad = hash(hn * 3.3 + i) * o.r * 0.82;
+        const cx = o.x + Math.cos(ang) * rad, cz = o.y + Math.sin(ang) * rad;
+        const hgt = 1.8 + hash(hn * 7.7) * 2.2;   // より高く鋭く
+        const br = 0.24 + hash(hn) * 0.14;
+        const shape = prismShape([cx, hgt / 2, cz], AXIS_Y, hgt / 2, 0, br, 6);
+        shape.faces.forEach((f) => out.push({ verts: f.map((vi) => shape.verts[vi]), color: '#3a3d33', alpha: 1 }));
+        // 光る鋭端(危険色)
+        const tip = prismShape([cx, hgt - 0.16, cz], AXIS_Y, 0.16, 0, br * 0.5, 6);
+        tip.faces.forEach((f) => out.push({ verts: f.map((vi) => tip.verts[vi]), color: '#ff5a2a', alpha: 1, emissive: true }));
+      }
+    }
+  });
+}
+
+
+// ==================== 共有定数・テーマ・カメラ director ====================
 
 const WORLD_UP = [0, 1, 0];
 const GROUND_Y = 0;
-const GRID_STEP = 50;
-const GRID_EXTENT = 600;
-const HORIZON_R = 900;
 export const ARENA_CX = 500, ARENA_CZ = 500;
 
 // 配色テーマ: scene.theme が 'arena' の場合のみ切替(未指定/'training'は従来と完全一致=下記値は
 // 既存の色リテラルをそのまま移設したもの)。機体色・エフェクト色(シーンから渡る値)はここでは
 // 扱わない=見分けを守る。sky/ground は render() のグラデーション、gridLine は地平線グリッド、
-// mountain(shade) は遠景の山の色を返す関数(shade は buildStaticWorld で焼き込んだ稜線ごとの陰影係数)。
+// mountain(shade) は旧ソフト版の遠景の山の色関数(現状未使用・テーマ定義の完全性のため残置)。
 export const THEMES = {
   training: {
     sky: ['#0a1030', '#1c3350', '#2e4a56', '#57806e'],
@@ -1033,35 +2005,11 @@ export const THEMES = {
 };
 export function themeOf(scene) { return scene && scene.theme === 'arena' ? THEMES.arena : THEMES.training; }
 
-export function buildStaticWorld() {
-  const faces = [];
-  const peaks = 20;
-  for (let i = 0; i < peaks; i++) {
-    const a0 = (i / peaks) * Math.PI * 2;
-    const a1 = ((i + 1) / peaks) * Math.PI * 2;
-    const hgt = 60 + hash(i * 3.1) * 140;
-    const p0 = [ARENA_CX + Math.cos(a0) * HORIZON_R, GROUND_Y, ARENA_CZ + Math.sin(a0) * HORIZON_R];
-    const p1 = [ARENA_CX + Math.cos(a1) * HORIZON_R, GROUND_Y, ARENA_CZ + Math.sin(a1) * HORIZON_R];
-    const mid = [
-      ARENA_CX + (Math.cos(a0) + Math.cos(a1)) * 0.5 * (HORIZON_R * 0.94),
-      hgt,
-      ARENA_CZ + (Math.sin(a0) + Math.sin(a1)) * 0.5 * (HORIZON_R * 0.94),
-    ];
-    const shade = 0.12 + hash(i * 7.7) * 0.08;
-    faces.push({ verts: [p0, p1, mid], shade, kind: 'mountain', noCull: true });
-  }
-  const gridLines = [];
-  for (let g = -GRID_EXTENT; g <= GRID_EXTENT; g += GRID_STEP) {
-    gridLines.push([[ARENA_CX + g, GROUND_Y + 0.02, ARENA_CZ - GRID_EXTENT], [ARENA_CX + g, GROUND_Y + 0.02, ARENA_CZ + GRID_EXTENT]]);
-    gridLines.push([[ARENA_CX - GRID_EXTENT, GROUND_Y + 0.02, ARENA_CZ + g], [ARENA_CX + GRID_EXTENT, GROUND_Y + 0.02, ARENA_CZ + g]]);
-  }
-  return { faces, gridLines };
-}
 
 // ==================== カメラ・ディレクター(camera:'auto') ====================
-// 手動カメラ(scene.camera.eye指定)は createR3D 内の computeCamera で完全に不変のまま分岐する。
+// 手動カメラ(scene.camera.eye指定)はレンダラ側(r3d-three.js updateCamera)で不変のまま分岐する。
 // 'auto' はディレクター(以下の決定論的なショット割り)が毎フレーム「目標 eye/target」を出し、
-// createR3D 閉包内の camSt が表示カメラを指数平滑(時定数τ)で追従させる。機体のストレイフ振動や
+// レンダラ側の camSt が表示カメラを指数平滑(時定数τ)で追従させる。機体のストレイフ振動や
 // ノックバックへの剛結合を断つのが目的。カット(ショット番号の変化)の瞬間だけ平滑状態を目標値で
 // リセット=スナップし、切れ味を残す。シーク/倍速でも「カット境界でスナップ」は保たれる
 // (ショット割り自体は tSec と固定シード(camSt.seed=初回フレームで確定)の決定論のまま)。
@@ -1191,10 +2139,25 @@ function shotOverShoulder(M, O, sideSign) {
   ];
   return { eye, target: [O.x, 3 * MECH_SCALE, O.y] };
 }
-function shotPOV(a, b, povSide) {
+function shotPOV(a, b, povSide, tSec) {
+  // コックピットPOV: 頭部/胴上部=コクピット高(4.0*MECH_SCALE)から相手を見据える一人称。
+  // eye は視線方向へ少し前(≈1.3m)に出す=胸前で開く自弾マズルフラッシュ(ビルボード)が
+  // カメラを覆うのを避ける。歩行の揺れ(横スウェイ+速い縦バブ)を tSec から決定論で加え、
+  // 「機体に乗っている」感を出す(振幅は照準リングの読みを壊さない小ささに抑える)。
   const src = povSide > 0 ? a : b, tgt = povSide > 0 ? b : a;
-  const headY = 4.0 * MECH_SCALE;
-  return { eye: [src.x, headY, src.y], target: [tgt.x, 3 * MECH_SCALE, tgt.y] };
+  let fwd = normalize([tgt.x - src.x, 0, tgt.y - src.y]);
+  if (length(fwd) < 1e-5) fwd = [1, 0, 0];
+  const rgt = [-fwd[2], 0, fwd[0]];
+  const t = tSec || 0;
+  const sway = (Math.sin(t * 1.9) + 0.5 * Math.sin(t * 3.1 + 1.3)) * 0.22 * MECH_SCALE;
+  const bob = Math.sin(t * 3.8) * 0.10 * MECH_SCALE;
+  const ahead = 2.2 * MECH_SCALE;
+  const eye = [
+    src.x + fwd[0] * ahead + rgt[0] * sway,
+    4.0 * MECH_SCALE + bob,
+    src.y + fwd[2] * ahead + rgt[2] * sway,
+  ];
+  return { eye, target: [tgt.x, 3 * MECH_SCALE, tgt.y], povIdx: povSide > 0 ? 0 : 1 };
 }
 function shotProjectileFollow(shot, localT, dur) {
   // 弾追跡: 弾の背後から着弾まで追う速い画(全弾種対応。beamは光条の走りを駆け抜ける)。
@@ -1242,6 +2205,7 @@ function findTrackedProjectile(scene, schIdx, seed, camSt) {
 // 近距離(<120m)ではFRAMEDスロットも肩越しへ差し替え=ほぼ全編ダイナミック(尺の割付は不変)。
 const SLOT_FRAMED = 0, SLOT_SHOULDER = 1, SLOT_PROJ = 2, SLOT_POV = 3, SLOT_MELEE = 4;
 const FRAMED_MIN_DIST = 120; // 両機フレームショットを使う機体間距離(EMA)の目安
+const POV_MIN_DIST = 60;     // コックピットPOVを使う下限距離(EMA)=中距離以遠の迫力用。近距離では敵が画面を覆い照準の画にならない
 function slotTypeFor(idx, seed) {
   const r = hash(idx * 3.37 + seed * 1.13 + 7.7);
   if (r < 0.16) return SLOT_FRAMED;
@@ -1254,7 +2218,8 @@ function shotDurationFor(idx, seed) {
   if (st === SLOT_FRAMED) return 3.5 + r * 2.5;   // 両機フレーム 3.5〜6s
   if (st === SLOT_PROJ) return 0.8 + r * 0.8;     // 弾追跡 0.8〜1.6s(速い画)
   if (st === SLOT_SHOULDER) return 1.8 + r * 1.4; // 肩越し 1.8〜3.2s(主力)
-  return 1.6 + r * 1.0;                           // POV/白兵 1.6〜2.6s
+  if (st === SLOT_POV) return 2.2 + r * 1.0;      // コックピットPOV 2.2〜3.2s(照準リングと距離読みを読ませる尺)
+  return 1.6 + r * 1.0;                           // 白兵 1.6〜2.6s
 }
 function locateShot(tSec, seed) {
   let acc = 0, idx = 0;
@@ -1296,7 +2261,7 @@ function enforceLine(eye, a, b, camSt) {
   return eye;
 }
 
-// ディレクター本体: 目標 eye/target を返す(表示カメラの平滑化は呼び出し側=createR3Dが行う)。
+// ディレクター本体: 目標 eye/target を返す(表示カメラの平滑化は呼び出し側=r3d-three.js が行う)。
 // camSt(閉包状態)には seed(初回フレームで確定する固定シード)・distEMA(機体間距離のEMA)・
 // tripodIdx/tripodEye(三脚ショットの固定位置)・amAng(aftermathの基準方位)を読み書きする。
 // dt=フレーム間実時間(上限0.1s)、reset=初回/巻き戻し時のEMAリセット指示。
@@ -1317,7 +2282,7 @@ export function computeAutoCamera(scene, tSec, aspect, camSt, dt, reset) {
   // 機体間距離のEMA(τ≈0.8s): 間合いの脈動(ストレイフ/ノックバック)がフレーミング距離に
   // 直結してズームがポンピングするのを防ぐ。フレーミングの「下限(基準画角)」にのみ使い、
   // 包含のハード検査(containEye)は生の機体位置で行う=最終権威。
-  if (reset) camSt.lineSide = null;   // ⑥ 新規試合/巻き戻しでイマジナリーラインの基準側を取り直す
+  if (reset) { camSt.lineSide = null; camSt.povIdx = -1; }   // ⑥ 新規試合/巻き戻しでイマジナリーラインの基準側とPOVラッチを取り直す
   if (reset || camSt.distEMA == null) camSt.distEMA = distRaw;
   else camSt.distEMA += (distRaw - camSt.distEMA) * (1 - Math.exp(-dt / 0.8));
   const dist2d = camSt.distEMA;
@@ -1414,16 +2379,23 @@ export function computeAutoCamera(scene, tSec, aspect, camSt, dt, reset) {
   // スロット種の決定と実行時オーバーライド(尺の割付=タイムラインは slotTypeFor のまま不変。
   // 差し替えは「何を映すか」だけ): FRAMED は中距離以上(distEMA>120m)のみ=近距離では肩越しへ。
   // PROJ は追える弾が無ければ肩越しへ。MELEE は機間<30mでなければ肩越しへ。
+  // POV は中距離以遠(distEMA≥60m)のみ=近距離では肩越しへ(コックピット越しの照準が成立する距離帯)。
+  // 判定は**ショット開始時に一度だけ**行いラッチする(三脚の tripodIdx と同じ流儀)。毎フレーム判定だと
+  // 接近戦へ向かう途中で distEMA が閾値を跨ぎ、ショット途中でPOV→肩越しへ滑り替わってHUDが消える。
   let type = slotTypeFor(sch.idx, seed);
   if (type === SLOT_FRAMED && dist2d <= FRAMED_MIN_DIST) type = SLOT_SHOULDER;
   if (type === SLOT_MELEE && dist2d >= 30) type = SLOT_SHOULDER;
+  if (type === SLOT_POV) {
+    if (camSt.povIdx !== sch.idx) { camSt.povIdx = sch.idx; camSt.povOk = dist2d >= POV_MIN_DIST; }
+    if (!camSt.povOk) type = SLOT_SHOULDER;
+  }
   let proj = null;
   if (type === SLOT_PROJ) {
     proj = findTrackedProjectile(scene, sch.idx, seed, camSt);
     if (!proj) type = SLOT_SHOULDER;
   }
 
-  let eye, target, showMarkers = true, tau = 0.5, contain = false;
+  let eye, target, showMarkers = true, tau = 0.5, contain = false, pov = null;
   if (type === SLOT_FRAMED) {
     const ti = baseShotTypeIndexNoRepeat(sch.idx, seed, aspect);
     if (BASE_SHOT_FNS[ti] === shotTripod) {
@@ -1448,8 +2420,10 @@ export function computeAutoCamera(scene, tSec, aspect, camSt, dt, reset) {
     tau = 0.12; // 速い画: 追従を軽く(それでも高周波は落ちる)
   } else if (type === SLOT_POV) {
     const povSide = hash(sch.idx * 9.9 + seed + 3) < 0.5 ? 1 : -1;
-    const r = shotPOV(a, b, povSide);
+    const r = shotPOV(a, b, povSide, tSec);
     eye = r.eye; target = r.target; showMarkers = false;
+    pov = r.povIdx;   // 視点機インデックス(レンダラが自機メッシュを隠しコックピットHUDを出す)
+    tau = 0.12;       // 一人称は頭部に追従(τが遅いと歩行速度×τぶんカメラが胴内に取り残される)
   } else if (type === SLOT_MELEE) {
     const r = shotMeleeClose(baseCtx);
     eye = r.eye; target = r.target; showMarkers = false;
@@ -1461,8 +2435,10 @@ export function computeAutoCamera(scene, tSec, aspect, camSt, dt, reset) {
     eye = r.eye; target = r.target; // 手前機のはみ出しは意図(マーカーは有効のまま)
   }
 
-  eye = enforceLine(eye, a, b, camSt);   // ⑥ イマジナリーラインの一方の側に保つ
-  return { eye, target, showMarkers, shotIdx: sch.idx, tau, contain };
+  // ⑥ イマジナリーラインの一方の側に保つ。POV は軸(A-B線)そのものの上=180度ルールの対象外とし、
+  // 鏡映を免除する(横スウェイが線を跨ぐたび鏡映されて |sin| 状の不自然な片側往復になるのを避ける)。
+  if (pov == null) eye = enforceLine(eye, a, b, camSt);
+  return { eye, target, showMarkers, shotIdx: sch.idx, tau, contain, pov };
 }
 
 // シーンの全ワールド座標をアリーナ中心(ARENA_CX,ARENA_CZ)まわりに WORLD_SCALE 倍で相似縮小する。
@@ -1486,860 +2462,6 @@ export function scaleScene(scene) {
   return out;
 }
 
-export function createR3D(canvas) {
-  const ctx = canvas.getContext('2d');
-  const world = buildStaticWorld();
-  const FOV = FOV_Y;
-  let _camFwd = [0, 0, 1];   // ⑤ 現フレームのカメラ前方(shade のリム/鏡面用。render 冒頭で更新)
-
-  // 'auto' カメラの平滑化状態(閉包)。ディレクターの目標 eye/target に表示カメラが指数平滑
-  // (時定数 CAM_TAU)で追従し、ショット番号が変わった瞬間だけ目標値でリセット=スナップする。
-  // t=前フレームの tSec / eye,target=表示カメラ / shotIdx=前フレームのショット番号 /
-  // seed,distEMA,tripodIdx,tripodEye,amAng=ディレクター側の状態(computeAutoCamera が読み書き)。
-  const camSt = {
-    t: null, eye: null, target: null, shotIdx: -1,
-    seed: null, distEMA: null, tripodIdx: -1, tripodEye: null, amAng: null,
-    projIdx: -1, projSig: null, // 弾追跡ショットが追っている弾の識別子(kind+着弾先)
-    amLock: null,               // 余韻カメラの固定ラッチ({eye,target}。勝者接近<14mで一度きり)
-  };
-  const CAM_TAU = 0.5;      // 表示カメラの追従時定数(基本ショット/POV)
-  const CAM_DT_MAX = 0.1;   // dt上限(タブ復帰などの巨大フレーム間隔で吹き飛ばない)
-
-  function computeCamera(scene, tSec) {
-    if (scene.camera && Array.isArray(scene.camera.eye)) {
-      const eye = scene.camera.eye;
-      const target = scene.camera.target || [500, 4, 500];
-      const forward = normalize(sub(target, eye));
-      let right = normalize(cross(forward, WORLD_UP));
-      if (length(right) < 1e-6) right = [1, 0, 0];
-      const up = normalize(cross(right, forward));
-      return { eye, forward, right, up, showMarkers: true };
-    }
-    const aspect = (canvas.width || 1) / (canvas.height || 1);
-    const dtRaw = camSt.t == null ? 0 : tSec - camSt.t;
-    const reset = camSt.t == null || dtRaw < -1e-3; // 初回 or 巻き戻しシーク
-    const dt = Math.max(0, Math.min(CAM_DT_MAX, dtRaw));
-    const raw = computeAutoCamera(scene, tSec, aspect, camSt, dt, reset);
-    const cut = reset || raw.shotIdx !== camSt.shotIdx || !camSt.eye;
-    if (cut) {
-      // カットはスナップ(補間しない): 平滑状態を新ショットの目標値でリセット
-      camSt.eye = raw.eye.slice();
-      camSt.target = raw.target.slice();
-    } else {
-      const k = 1 - Math.exp(-dt / (raw.tau || CAM_TAU));
-      camSt.eye = lerpP(camSt.eye, raw.eye, k);
-      camSt.target = lerpP(camSt.target, raw.target, k);
-    }
-    camSt.t = tSec;
-    camSt.shotIdx = raw.shotIdx;
-    if (raw.contain) {
-      // 表示カメラへの最終包含補正(毎フレームのハード保証)。ディレクター目標は補正済みだが、
-      // 平滑化の遅れで残るはみ出しをここで吸収する。視線軸に沿った後退のみ(基底は不変)なので
-      // スナップ相当の強さで効かせても画の向きは揺れない。補正は camSt.eye に書き戻して持ち越す
-      // (次フレームの平滑化が補正済み位置から始まり、押し戻し合いの振動を防ぐ)。
-      camSt.eye = containEye(camSt.eye, camSt.target, aspect, scene.mechs || []);
-    }
-    const forward = normalize(sub(camSt.target, camSt.eye));
-    let right = normalize(cross(forward, WORLD_UP));
-    if (length(right) < 1e-6) right = [1, 0, 0];
-    const up = normalize(cross(right, forward));
-    return { eye: camSt.eye, forward, right, up, showMarkers: raw.showMarkers };
-  }
-
-  function toCamera(cam, p) {
-    const rel = sub(p, cam.eye);
-    return [dot(rel, cam.right), dot(rel, cam.up), dot(rel, cam.forward)];
-  }
-
-  function project(cp, W, H) {
-    const f = 1 / Math.tan(FOV / 2);
-    const aspect = W / H;
-    const z = cp[2];
-    const sx = (cp[0] * f) / (aspect * z);
-    const sy = (cp[1] * f) / z;
-    return [W / 2 + sx * W / 2, H / 2 - sy * H / 2];
-  }
-
-  function billboardRibbon(A, B, camForward, halfW) {
-    const dir = normalize(sub(B, A));
-    let side = cross(dir, camForward);
-    if (length(side) < 1e-5) side = [1, 0, 0]; else side = normalize(side);
-    const off = scaleV(side, halfW);
-    return [add(A, off), sub(A, off), sub(B, off), add(B, off)];
-  }
-
-  function billboardRibbonSimple(A, B, halfW) {
-    const dir = normalize(sub(B, A));
-    let side = cross(dir, WORLD_UP);
-    if (length(side) < 1e-5) side = [1, 0, 0]; else side = normalize(side);
-    const off = scaleV(side, halfW);
-    return [add(A, off), sub(A, off), sub(B, off), add(B, off)];
-  }
-
-  function thinQuadFromCenter(center, dirVec, size) {
-    const halfW = size * 0.12;
-    const A = sub(center, scaleV(dirVec, size));
-    const B = add(center, scaleV(dirVec, size));
-    let s = cross(dirVec, [0, 0, 1]);
-    s = length(s) < 1e-5 ? [1, 0, 0] : normalize(s);
-    const off = scaleV(s, halfW);
-    return [add(A, off), sub(A, off), sub(B, off), add(B, off)];
-  }
-
-  function pushMuzzleFlash(kind, center, size, alpha, out, right3, forward3) {
-    if (kind === 'shotgun') {
-      const spread = 5;
-      for (let i = 0; i < spread; i++) {
-        const t = (i / (spread - 1)) - 0.5;
-        const dir = normalize(add(scaleV(forward3, 1), scaleV(right3, t * 0.9)));
-        const tip = add(center, scaleV(dir, size * 1.4));
-        out.push({ verts: [center, add(center, scaleV(right3, 0.02)), tip], color: '#ffe9b0', alpha: alpha * 0.7, emissive: true, noCull: true });
-      }
-    } else {
-      out.push({ verts: thinQuadFromCenter(center, right3, size), color: '#fff7d8', alpha, emissive: true, noCull: true });
-      out.push({ verts: thinQuadFromCenter(center, [0, 1, 0], size), color: '#fff7d8', alpha, emissive: true, noCull: true });
-    }
-  }
-
-  // 姿勢適用+ワールド座標化(階層変換を経由)。out に face エントリを積む。
-  function poseMechFaces(mech, tSec, out) {
-    const P = computeMechPose(mech, tSec);   // 歩容/IK/姿勢は純関数へ抽出(Three.js版と共有)
-    if (!P) return;
-    const { mesh, alive, wp, attack, move, legged, walker2,
-      forward3, right3, idxHash, flash01, origin, tiltX, rockAngle, gaitAng, motions } = P;
-
-    // ②(d) 足元の砂煙: 接地する足の後方へ淡い塵を上げる(重量物が地面を蹴る感)。歩調に同期し左右交互。
-    if (alive && move && legged && move.mag > 0.28) {
-      const lat = (mesh.legsKind === 'quad' ? 0.55 : 0.42) * MECH_SCALE;
-      for (const s of [1, -1]) {
-        const strike = Math.max(0, -Math.cos((walker2 ? gaitAng : wp * 1.4) + (s > 0 ? 0 : Math.PI)));  // 脚が後方=接地でピーク
-        if (strike < 0.35) continue;
-        const base = add([mech.x || 0, 0, mech.y || 0], add(scaleV(right3, lat * s), scaleV(forward3, -0.3 * MECH_SCALE)));
-        const r = (0.25 + (1 - strike) * 0.5) * MECH_SCALE;   // 接地直後は小さく→広がる
-        const sh = octaShape(base[0], 0.12 + r * 0.3, base[2], r);
-        const a = strike * 0.22 * move.mag;
-        sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: '#8f8676', alpha: a, emissive: false, noCull: true }));
-      }
-    }
-
-    const toWorld = (p) => {
-      let pp = p;
-      if (tiltX) pp = rotateAroundAxis(pp, AXIS_X, tiltX);
-      if (rockAngle) pp = rotateAroundAxis(pp, AXIS_Z, rockAngle);
-      return add(origin, add(scaleV(right3, pp[0]), add([0, pp[1], 0], scaleV(forward3, pp[2]))));
-    };
-
-    mesh.parts.forEach((part, pi) => {
-      const mo = motions[pi];
-      if (mo.hide) return;
-      const color = !alive ? mixColor(part.color, '#0a0a0a', 0.65)
-        : (flash01 > 0.01 ? mixColor(part.color, '#ffffff', Math.min(0.8, flash01)) : part.color);
-      for (const face of part.faces) {
-        const verts = face.map((vi) => {
-          const restPoint = add(part.verts[vi], part.pivot);
-          const p = transformThroughChain(mesh.parts, motions, pi, restPoint);
-          return toWorld(p);
-        });
-        out.push({ verts, color, emissive: part.emissive, glowSeed: idxHash });
-      }
-    });
-
-    // ② 撃破機のくすぶり煙: 横倒しした胴の「実際の位置」から立ち上げる(toWorldがロール/持上げ込みで
-    //    胴中心を返すので、機体外にズレない)。tSecで位相をずらし絶やさない。
-    if (!alive && mech.smolder) {
-      const torsoIdx = mesh.parts.findIndex((p) => p.name === 'torso');
-      if (torsoIdx >= 0) {
-        const base = toWorld(transformThroughChain(mesh.parts, motions, torsoIdx, mesh.parts[torsoIdx].pivot));
-        for (let k = 0; k < 3; k++) {
-          const ph = (tSec * 0.4 + k / 3) % 1;
-          const r = (0.5 + ph * 1.4) * MECH_SCALE;
-          const dy = ph * 2.4 * MECH_SCALE;              // 立ち上る
-          const sway = (hash(k * 4.3 + idxHash) - 0.5) * 0.8 * MECH_SCALE;
-          const cx = base[0] + sway, cz = base[2] + (hash(k * 2.1 + idxHash) - 0.5) * 0.8 * MECH_SCALE;
-          const a = Math.max(0, (1 - ph) * 0.5);
-          if (a <= 0.02) continue;
-          const sh = octaShape(cx, base[1] + dy, cz, Math.max(0.05, r));
-          const v = Math.round(46 + ph * 26);
-          sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: `rgb(${v},${v},${v + 2})`, alpha: a, emissive: false, noCull: true }));
-        }
-      }
-    }
-
-    // --- 攻撃モーションの追加演出(マズルフラッシュ/刃の軌跡/噴煙) ---
-    if (alive && attack) {
-      mesh.parts.forEach((part, pi) => {
-        if (!part.role || !matchesAttack(part, attack)) return;
-        const age = clamp01(attack.age01 == null ? 0 : attack.age01);
-        if (part.role === 'muzzle' && (attack.kind === 'rifle' || attack.kind === 'shotgun' || attack.kind === 'railgun') && age < 0.22) {
-          const wp0 = toWorld(transformThroughChain(mesh.parts, motions, pi, part.pivot));
-          const size = (attack.kind === 'railgun' ? 0.9 : attack.kind === 'shotgun' ? 0.7 : 0.5) * MECH_SCALE;
-          const a = 1 - age / 0.22;
-          pushMuzzleFlash(attack.kind, wp0, size, a, out, right3, forward3);
-        } else if (part.role === 'hilt' && attack.kind === 'blade') {
-          // 刃の軌跡(扇形の半透明ポリ): 現在の刃先とその手前角度を結ぶ簡易な扇
-          const bladeIdx = mesh.parts.findIndex((p2) => p2.parentName === part.name && p2.role === 'blade');
-          if (bladeIdx >= 0) {
-            const bp = mesh.parts[bladeIdx];
-            let farVi = 0, farD = -1;
-            bp.verts.forEach((v, i) => { const d = length(v); if (d > farD) { farD = d; farVi = i; } });
-            const tipRest = add(bp.verts[farVi], bp.pivot);
-            const tipWorld = toWorld(transformThroughChain(mesh.parts, motions, bladeIdx, tipRest));
-            const hiltWorld = toWorld(transformThroughChain(mesh.parts, motions, pi, part.pivot));
-            const sweepSign = (part.side || 1) >= 0 ? 1 : -1;
-            const prevOffset = rotateAroundAxis(sub(tipWorld, hiltWorld), AXIS_Y, -0.4 * sweepSign);
-            const p0 = add(hiltWorld, prevOffset);
-            const alpha = Math.max(0, 0.55 * (1 - Math.abs(age - 0.5) * 1.6));
-            if (alpha > 0) out.push({ verts: [hiltWorld, p0, tipWorld], color: '#bff7ff', alpha, emissive: true, noCull: true });
-          }
-        } else if (part.role === 'pod' && attack.kind === 'missile') {
-          const base = toWorld(transformThroughChain(mesh.parts, motions, pi, part.pivot));
-          for (let i = 0; i < 3; i++) {
-            const puffAge = clamp01(age + i * 0.08);
-            const hn = hash(i * 7.7 + Math.floor(puffAge * 20) * 1.3);
-            const r = (0.15 + puffAge * 0.6) * MECH_SCALE;
-            const dy = (puffAge * 0.8 + hn * 0.2) * MECH_SCALE;
-            const spread = 0.4 * MECH_SCALE;
-            const cx2 = base[0] + (hn - 0.5) * spread, cz2 = base[2] + (hash(hn * 3.1) - 0.5) * spread;
-            const shape = octaShape(cx2, base[1] + dy, cz2, Math.max(0.05, r));
-            const a = Math.max(0, (1 - puffAge) * 0.5);
-            if (a > 0) shape.faces.forEach((f) => out.push({ verts: f.map((vi2) => shape.verts[vi2]), color: '#c9d4d8', alpha: a, emissive: false, noCull: true }));
-          }
-        }
-      });
-    }
-  }
-
-  // ---- SHOT_STYLES: 弾種(kind)ごとの描き分け。各関数は (age,A,B,cam,out,si) を受け、
-  // A=発射点/B=着弾点(shotY固定高さ)。si=scene.shots内のindex(決定論ハッシュのシード用)。
-  const SHOT_STYLES = {
-    rifle(age, A, B, cam, out) {
-      // 黄橙の短いトレーサー
-      const p1 = lerpP(A, B, age);
-      const p0 = lerpP(A, B, Math.max(0, age - 0.045));
-      out.push({ verts: billboardRibbon(p0, p1, cam.forward, 0.09 * MECH_SCALE), color: '#ffcf6a', alpha: 0.92, emissive: true });
-    },
-    shotgun(age, A, B, cam, out, si) {
-      // 橙の粒が円錐状に散開(複数点)
-      let fwd = normalize(sub(B, A));
-      if (length(fwd) < 1e-5) fwd = [0, 0, 1];
-      let right3 = cross(fwd, WORLD_UP);
-      right3 = length(right3) < 1e-5 ? [1, 0, 0] : normalize(right3);
-      const up3 = normalize(cross(right3, fwd));
-      const p1 = lerpP(A, B, age);
-      const spread = (0.3 + age * 1.5) * MECH_SCALE;
-      const n = 5;
-      for (let i = 0; i < n; i++) {
-        const hn = hash(si * 7.13 + i * 3.71 + 0.4);
-        const hn2 = hash(si * 11.7 + i * 5.13 + 1.9);
-        const ang = hn * Math.PI * 2;
-        const rad = (0.25 + hn2 * 0.85) * spread;
-        const along = (hn2 - 0.5) * 0.18 * MECH_SCALE;
-        const pos = add(add(p1, scaleV(right3, Math.cos(ang) * rad)), add(scaleV(up3, Math.sin(ang) * rad), scaleV(fwd, along)));
-        const size = 0.06 * MECH_SCALE;
-        out.push({ verts: thinQuadFromCenter(pos, right3, size), color: '#ff9a4a', alpha: Math.max(0, 0.85 * (1 - age * 0.6)), emissive: true, noCull: true });
-      }
-    },
-    beam(age, A, B, cam, out) {
-      // 翠白の連続光条: コア(細く明るい)+外周グロー(太く淡い)
-      const a = 1 - age;
-      if (a <= 0) return;
-      out.push({ verts: billboardRibbon(A, B, cam.forward, 0.16 * MECH_SCALE), color: '#eafff5', alpha: a, emissive: true });
-      out.push({ verts: billboardRibbon(A, B, cam.forward, 0.55 * MECH_SCALE), color: '#7dffcf', alpha: a * 0.32, emissive: true });
-    },
-    railgun(age, A, B, cam, out) {
-      // 青白の細長いストリーク(高速で先行)+通過後の残光(全経路がうっすら光る)
-      const travelT = Math.min(1, age * 1.6);
-      const head = lerpP(A, B, travelT);
-      const tail = lerpP(A, B, Math.max(0, travelT - 0.12));
-      out.push({ verts: billboardRibbon(tail, head, cam.forward, 0.05 * MECH_SCALE), color: '#cfe8ff', alpha: 0.95, emissive: true });
-      const glowA = Math.max(0, Math.min(1, (age - 0.12) * 1.4)) * Math.max(0, 1 - age);
-      if (glowA > 0.02) out.push({ verts: billboardRibbon(A, B, cam.forward, 0.03 * MECH_SCALE), color: '#8fd0ff', alpha: glowA * 0.5, emissive: true });
-    },
-    missile(age, A, B, cam, out, si) {
-      // ⑥ ロケット化: 金属の弾体+発光する噴射炎(ちらつき)+後方に膨張しながら漂う白煙トレイル。
-      const pos = lerpP(A, B, age);
-      let dir = normalize(sub(B, A));
-      if (length(dir) < 1e-5) dir = [0, 0, 1];
-      const bodyHalf = 0.22 * MECH_SCALE;
-      const nose = add(pos, scaleV(dir, bodyHalf));
-      const tail = add(pos, scaleV(dir, -bodyHalf));
-      // 噴射炎(発光・フレーム毎にちらつく)
-      const flick = 0.6 + hash(si * 5.1 + Math.floor(age * 40) * 1.7) * 0.7;
-      const flameEnd = add(tail, scaleV(dir, -0.55 * MECH_SCALE * flick));
-      out.push({ verts: billboardRibbon(tail, flameEnd, cam.forward, 0.15 * MECH_SCALE), color: '#ffcf4a', alpha: 0.85, emissive: true });
-      out.push({ verts: billboardRibbon(tail, add(tail, scaleV(dir, -0.28 * MECH_SCALE * flick)), cam.forward, 0.09 * MECH_SCALE), color: '#fff7d6', alpha: 0.95, emissive: true });
-      // 弾体(金属)+弾頭(明色)
-      out.push({ verts: billboardRibbon(tail, nose, cam.forward, 0.1 * MECH_SCALE), color: '#b9c0c6', alpha: 1, emissive: false });
-      out.push({ verts: billboardRibbon(add(pos, scaleV(dir, bodyHalf * 0.4)), nose, cam.forward, 0.1 * MECH_SCALE), color: '#e9edf0', alpha: 1, emissive: false });
-      // 白煙トレイル(長め・膨張・漂い)
-      for (let i = 1; i <= 6; i++) {
-        const t = age - i * 0.05;
-        if (t < 0) break;
-        const tp = lerpP(A, B, t);
-        const drift = (hash(si * 3.3 + i * 2.7) - 0.5) * 0.35 * MECH_SCALE;
-        const r = (0.12 + i * 0.07) * MECH_SCALE;
-        const a = 0.5 * (1 - i / 7);
-        const sh = octaShape(tp[0] + drift, tp[1] + i * 0.05 * MECH_SCALE, tp[2] + drift, r);
-        sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: '#c8ccd0', alpha: a, emissive: false, noCull: true }));
-      }
-    },
-    rocketpunch(age, A, B, cam, out, si) {
-      // 回転しながら飛ぶ小さな拳型ブロック
-      const p1 = lerpP(A, B, age);
-      const p0 = lerpP(A, B, Math.max(0, age - 0.06));
-      out.push({ verts: billboardRibbon(p0, p1, cam.forward, 0.14 * MECH_SCALE), color: '#c7d0d4', alpha: 0.9, emissive: false });
-      let dirv = normalize(sub(B, A));
-      if (length(dirv) < 1e-5) dirv = [0, 0, 1];
-      const spinAngle = age * 10 + si * 1.7;
-      const boxHalf = 0.22 * MECH_SCALE;
-      const box = boxShape(p1[0], p1[1], p1[2], boxHalf, boxHalf * 0.85, boxHalf * 1.35);
-      const rotVerts = box.verts.map((v) => add(p1, rotateAroundAxis(sub(v, p1), dirv, spinAngle)));
-      box.faces.forEach((f) => out.push({ verts: f.map((vi) => rotVerts[vi]), color: '#9aa4a8', alpha: 1, emissive: false }));
-    },
-    blade(age, A, B, cam, out) {
-      // 既存の斬閃(短いトレーサー)を維持
-      const p1 = lerpP(A, B, age);
-      const p0 = lerpP(A, B, Math.max(0, age - 0.06));
-      out.push({ verts: billboardRibbon(p0, p1, cam.forward, 0.12 * MECH_SCALE), color: '#dfffef', alpha: 0.9 * (1 - age * 0.3), emissive: true });
-    },
-    drill(age, A, B, cam, out) {
-      // 既存の回転演出(トレーサー+芯のブロック)を維持
-      const p1 = lerpP(A, B, age);
-      const p0 = lerpP(A, B, Math.max(0, age - 0.06));
-      out.push({ verts: billboardRibbon(p0, p1, cam.forward, 0.16 * MECH_SCALE), color: '#4a4a4a', alpha: 0.95, emissive: false });
-      const shape = octaShape(p1[0], p1[1], p1[2], 0.22 * MECH_SCALE);
-      shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#2e2e2e', alpha: 1, emissive: false }));
-    },
-  };
-
-  function shotWorldFaces(scene, cam, out) {
-    (scene.shots || []).forEach((s, si) => {
-      const age = clamp01(s.age01 == null ? 0 : s.age01);
-      // ⑤ 発射=マズル高さ、着弾=被弾部位高さへ斜めに。地面すれすれの水平飛翔を解消。
-      const srcY = s.y0 != null ? s.y0 : MUZZLE_Y;
-      const dstY = s.y1 != null ? s.y1 : hitPartY(s.kind, si, s.tx, s.ty);
-      const A = [s.x, srcY, s.y];
-      const B = [s.tx, dstY, s.ty];
-      const style = SHOT_STYLES[s.kind] || SHOT_STYLES.rifle;
-      style(age, A, B, cam, out, si);
-    });
-  }
-
-  function blastWorldFaces(scene, out, tSec) {
-    (scene.blasts || []).forEach((b, bi) => {
-      const age = clamp01(b.age01 == null ? 0 : b.age01);
-      const kind = b.kind || (b.big ? 'boom' : 'hit');
-      if (kind === 'smoke') {
-        // くすぶる残骸の煙: age01で上昇+拡散+フェード(釣鐘状=sin(age*PI))。決定論のちらつき火花付き。
-        // 半径・上昇量・火花サイズはレビュー9巡目で×1.5(敗北の余韻を強く)。
-        const cx = b.x, cz = b.y;
-        const seed = bi * 13.7 + cx * 0.021 + cz * 0.019;
-        const riseAmt = 3.9 * MECH_SCALE;
-        const cy = (0.5 + riseAmt * age) * MECH_SCALE;
-        const baseR = 0.45 * MECH_SCALE;
-        const growR = 1.575 * MECH_SCALE;
-        const r = baseR + growR * age;
-        const bell = Math.max(0, Math.sin(Math.min(1, age) * Math.PI));
-        const alpha = bell * 0.4;
-        const driftX = (hash(seed) - 0.5) * 0.7 * MECH_SCALE * age;
-        const driftZ = (hash(seed * 1.7) - 0.5) * 0.7 * MECH_SCALE * age;
-        if (alpha > 0.003) {
-          const shape = octaShape(cx + driftX, cy, cz + driftZ, Math.max(0.04 * MECH_SCALE, r));
-          const shadeV = Math.round(58 + bell * 22);
-          const smokeCol = `rgba(${shadeV},${shadeV},${shadeV + 2},1)`;
-          shape.faces.forEach((f) => out.push({ verts: f.map((vi) => shape.verts[vi]), color: smokeCol, alpha, noCull: true }));
-        }
-        // 時々の火花のちらつき(高周波sin、決定論。age前半のみ・煙の根元付近で明滅)
-        if (age < 0.55) {
-          const flick = Math.sin((tSec || 0) * 23 + seed) * 0.5 + 0.5;
-          const sparkA = Math.max(0, (flick - 0.7) / 0.3) * (1 - age / 0.55) * 0.85;
-          if (sparkA > 0.01) {
-            const sy = 0.35 * MECH_SCALE + riseAmt * age * MECH_SCALE * 0.15;
-            const sshape = octaShape(cx + driftX * 0.4, sy, cz + driftZ * 0.4, 0.09 * MECH_SCALE);
-            sshape.faces.forEach((f) => out.push({ verts: f.map((vi) => sshape.verts[vi]), color: '#ffa050', alpha: sparkA, emissive: true, noCull: true }));
-          }
-        }
-        return;
-      }
-      if (kind === 'parry') {
-        const cx = b.x, cz = b.y;
-        const cy = 2.6 * MECH_SCALE;
-        const ang0 = hash(cx * 0.13 + cz * 0.07) * Math.PI * 2;
-        const arc = 0.9;
-        const r = (1.2 + 3.2 * (1 - (1 - age) * (1 - age))) * MECH_SCALE;
-        const alpha = Math.max(0, 1 - age * 1.4);
-        const segs = 8;
-        for (let i = 0; i < segs; i++) {
-          const a0 = ang0 - arc / 2 + (i / segs) * arc;
-          const a1 = ang0 - arc / 2 + ((i + 1) / segs) * arc;
-          const p0 = [cx + Math.cos(a0) * r, cy, cz + Math.sin(a0) * r];
-          const p1 = [cx + Math.cos(a1) * r, cy, cz + Math.sin(a1) * r];
-          out.push({ verts: [[cx, cy, cz], p0, p1], color: '#eaffff', alpha: alpha * 0.6, emissive: true, noCull: true });
-        }
-        return;
-      }
-      if (kind === 'hit') {
-        const wpn = b.wpn;
-        if (wpn === 'rifle' || wpn === 'shotgun') hitSpark(b, bi, age, out);
-        else if (wpn === 'beam') hitBeam(b, age, out);
-        else if (wpn === 'railgun') hitRailgun(b, bi, age, out);
-        else if (wpn === 'missile') hitMissile(b, bi, age, out);
-        else if (wpn === 'blade' || wpn === 'drill') hitSlashArc(b, age, out);
-        else if (wpn === 'rocketpunch') hitRocketpunch(b, age, out);
-        else hitGeneric(b, bi, age, out); // wpn不明時は従来の汎用hit
-        return;
-      }
-      // kind === 'boom'(撃破・障害物破壊): 従来どおり不変
-      const maxR = 7 * MECH_SCALE;
-      const r = maxR * (1 - (1 - age) * (1 - age));
-      const cx = b.x, cz = b.y;
-      const cy = 1 * MECH_SCALE + r * 0.4;
-      const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, r));
-      const alpha = Math.max(0, 1 - age);
-      shape.faces.forEach((f) => {
-        out.push({ verts: f.map((i) => shape.verts[i]), color: '#ffd9a0', alpha: alpha * 0.85, emissive: true });
-      });
-      const segs = 10;
-      const groundY = 0.05 * MECH_SCALE;
-      for (let i = 0; i < segs; i++) {
-        const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
-        const gr = r * 1.3;
-        out.push({
-          verts: [[cx, groundY, cz], [cx + Math.cos(a0) * gr, groundY, cz + Math.sin(a0) * gr], [cx + Math.cos(a1) * gr, groundY, cz + Math.sin(a1) * gr]],
-          color: '#ffb060', alpha: alpha * 0.3, emissive: true, noCull: true,
-        });
-      }
-      const debN = 6;
-      for (let i = 0; i < debN; i++) {
-        const hn = hash(bi * 13.1 + i * 5.3 + age * 0.01);
-        const ang = hn * Math.PI * 2;
-        const el = 0.3 + hash(hn * 9.9) * 0.6;
-        const len = (0.5 + hash(hn * 3.3) * 1.5) * age * MECH_SCALE;
-        const dir = [Math.cos(ang), el, Math.sin(ang)];
-        const start = [cx, cy, cz];
-        const end = add(start, scaleV(dir, len * 3));
-        out.push({ verts: billboardRibbonSimple(start, end, 0.05 * MECH_SCALE), color: '#ffe0b0', alpha: alpha * 0.7, emissive: true });
-      }
-    });
-  }
-
-  // ---- 着弾(kind==='hit')の武器別演出。b={x,y,wpn,age01} ----
-  function hitSpark(b, bi, age, out) {
-    // 実弾系(rifle/shotgun)=小さな火花
-    const cx = b.x, cz = b.y, cy = 1.0 * MECH_SCALE;
-    const alpha = Math.max(0, 1 - age * 1.6);
-    if (alpha <= 0) return;
-    const n = 5;
-    for (let i = 0; i < n; i++) {
-      const hn = hash(bi * 9.3 + i * 4.7 + 0.2);
-      const ang = hn * Math.PI * 2;
-      const el = 0.2 + hash(hn * 3.1) * 0.5;
-      const len = (0.15 + hash(hn * 7.7) * 0.35) * (0.3 + age * 1.4) * MECH_SCALE;
-      const dir = [Math.cos(ang), el, Math.sin(ang)];
-      const end = add([cx, cy, cz], scaleV(dir, len));
-      out.push({ verts: billboardRibbonSimple([cx, cy, cz], end, 0.025 * MECH_SCALE), color: '#fff2c0', alpha, emissive: true });
-    }
-  }
-  function hitBeam(b, age, out) {
-    // beam=白熱の閃光(短)
-    const a = Math.max(0, 1 - age * 2.2);
-    if (a <= 0) return;
-    const cx = b.x, cz = b.y, cy = 1.2 * MECH_SCALE;
-    const r = (0.35 + age * 0.3) * MECH_SCALE;
-    const shape = octaShape(cx, cy, cz, r);
-    shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#f2fff8', alpha: a * 0.95, emissive: true }));
-  }
-  function hitRailgun(b, bi, age, out) {
-    // railgun=大きな貫通スパーク+金属片
-    const cx = b.x, cz = b.y, cy = 1.1 * MECH_SCALE;
-    const r = 1.6 * MECH_SCALE * (1 - (1 - age) * (1 - age));
-    const alpha = Math.max(0, 1 - age);
-    const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, r * 0.4));
-    shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#dff2ff', alpha: alpha * 0.9, emissive: true }));
-    const debN = 6;
-    for (let i = 0; i < debN; i++) {
-      const hn = hash(bi * 17.3 + i * 6.1 + 0.5);
-      const ang = hn * Math.PI * 2;
-      const el = 0.1 + hash(hn * 5.3) * 0.4;
-      const len = (1.0 + hash(hn * 2.9) * 1.6) * age * MECH_SCALE;
-      const dir = [Math.cos(ang), el, Math.sin(ang)];
-      const end = add([cx, cy, cz], scaleV(dir, len));
-      out.push({ verts: billboardRibbonSimple([cx, cy, cz], end, 0.045 * MECH_SCALE), color: '#b9d6e6', alpha: alpha * 0.85, emissive: true });
-    }
-  }
-  function hitMissile(b, bi, age, out) {
-    // missile=火球+煙の輪(b.scale=掠り時の縮小。既定1)
-    const sc = b.scale || 1;
-    const cx = b.x, cz = b.y;
-    const maxR = 3.4 * MECH_SCALE * sc;
-    const r = maxR * (1 - (1 - age) * (1 - age));
-    const cy = 1 * MECH_SCALE + r * 0.35;
-    const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, r));
-    const alpha = Math.max(0, 1 - age);
-    shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#ffc27a', alpha: alpha * 0.85, emissive: true }));
-    const ringR = (0.6 + age * 2.2) * MECH_SCALE;
-    const ringY = cy + (0.4 + age * 0.6) * MECH_SCALE;
-    const ringA = Math.max(0, 1 - age) * 0.4;
-    if (ringA > 0.01) {
-      const segs = 12;
-      for (let i = 0; i < segs; i++) {
-        const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
-        const p0 = [cx + Math.cos(a0) * ringR, ringY, cz + Math.sin(a0) * ringR];
-        const p1 = [cx + Math.cos(a1) * ringR, ringY, cz + Math.sin(a1) * ringR];
-        out.push({ isLine: true, verts: [p0, p1], color: `rgba(210,210,214,${ringA.toFixed(3)})` });
-      }
-    }
-    const segs2 = 10, groundY = 0.05 * MECH_SCALE, gr = r * 1.3;
-    for (let i = 0; i < segs2; i++) {
-      const a0 = (i / segs2) * Math.PI * 2, a1 = ((i + 1) / segs2) * Math.PI * 2;
-      out.push({
-        verts: [[cx, groundY, cz], [cx + Math.cos(a0) * gr, groundY, cz + Math.sin(a0) * gr], [cx + Math.cos(a1) * gr, groundY, cz + Math.sin(a1) * gr]],
-        color: '#ffb060', alpha: alpha * 0.3, emissive: true, noCull: true,
-      });
-    }
-  }
-  function hitSlashArc(b, age, out) {
-    // blade・drill=斬撃アーク(弧状の光。既存parryと同系の弧描画を流用)
-    const cx = b.x, cz = b.y, cy = 2.4 * MECH_SCALE;
-    const ang0 = hash(cx * 0.13 + cz * 0.07 + 5.5) * Math.PI * 2;
-    const arc = 1.1;
-    const r = (1.0 + 3.0 * (1 - (1 - age) * (1 - age))) * MECH_SCALE;
-    const alpha = Math.max(0, 1 - age * 1.5);
-    const segs = 8;
-    for (let i = 0; i < segs; i++) {
-      const a0 = ang0 - arc / 2 + (i / segs) * arc;
-      const a1 = ang0 - arc / 2 + ((i + 1) / segs) * arc;
-      const p0 = [cx + Math.cos(a0) * r, cy, cz + Math.sin(a0) * r];
-      const p1 = [cx + Math.cos(a1) * r, cy, cz + Math.sin(a1) * r];
-      out.push({ verts: [[cx, cy, cz], p0, p1], color: '#eafcff', alpha: alpha * 0.55, emissive: true, noCull: true });
-    }
-  }
-  function hitRocketpunch(b, age, out) {
-    // rocketpunch=衝撃リング
-    const cx = b.x, cz = b.y, cy = 1.3 * MECH_SCALE;
-    const r = (0.3 + age * 3.0) * MECH_SCALE;
-    const alpha = Math.max(0, 1 - age * 1.3);
-    if (alpha <= 0) return;
-    const segs = 14;
-    for (let i = 0; i < segs; i++) {
-      const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
-      const p0 = [cx + Math.cos(a0) * r, cy, cz + Math.sin(a0) * r];
-      const p1 = [cx + Math.cos(a1) * r, cy, cz + Math.sin(a1) * r];
-      out.push({ isLine: true, verts: [p0, p1], color: `rgba(230,236,238,${(alpha * 0.8).toFixed(3)})` });
-    }
-    const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, 0.5 * MECH_SCALE * (1 - age)));
-    shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#eef0f2', alpha: Math.max(0, 1 - age * 2) * 0.8, emissive: true }));
-  }
-  function hitGeneric(b, bi, age, out) {
-    // wpn不明時: 従来の汎用hit(旧・boom/hit共通コードのhit版=maxR3.2・debN3)をそのまま踏襲
-    const maxR = 3.2 * MECH_SCALE;
-    const r = maxR * (1 - (1 - age) * (1 - age));
-    const cx = b.x, cz = b.y;
-    const cy = 1 * MECH_SCALE + r * 0.4;
-    const shape = octaShape(cx, cy, cz, Math.max(0.05 * MECH_SCALE, r));
-    const alpha = Math.max(0, 1 - age);
-    shape.faces.forEach((f) => out.push({ verts: f.map((i) => shape.verts[i]), color: '#ffd9a0', alpha: alpha * 0.85, emissive: true }));
-    const segs = 10, groundY = 0.05 * MECH_SCALE, gr = r * 1.3;
-    for (let i = 0; i < segs; i++) {
-      const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
-      out.push({
-        verts: [[cx, groundY, cz], [cx + Math.cos(a0) * gr, groundY, cz + Math.sin(a0) * gr], [cx + Math.cos(a1) * gr, groundY, cz + Math.sin(a1) * gr]],
-        color: '#ffb060', alpha: alpha * 0.3, emissive: true, noCull: true,
-      });
-    }
-    const debN = 3;
-    for (let i = 0; i < debN; i++) {
-      const hn = hash(bi * 13.1 + i * 5.3 + age * 0.01);
-      const ang = hn * Math.PI * 2;
-      const el = 0.3 + hash(hn * 9.9) * 0.6;
-      const len = (0.5 + hash(hn * 3.3) * 1.5) * age * MECH_SCALE;
-      const dir = [Math.cos(ang), el, Math.sin(ang)];
-      const end = add([cx, cy, cz], scaleV(dir, len * 3));
-      out.push({ verts: billboardRibbonSimple([cx, cy, cz], end, 0.05 * MECH_SCALE), color: '#ffe0b0', alpha: alpha * 0.7, emissive: true });
-    }
-  }
-
-  // 障害物(scene.obstacles): wall=岩柱(alive/hpFracで劣化・瓦礫化)/ mud=暗色円盤 / spike=錐クラスタ
-  function obstacleWorldFaces(scene, out) {
-    (scene.obstacles || []).forEach((o) => {
-      if (o.kind === 'wall') {
-        const alive = o.alive !== false;
-        const hpFrac = o.hpFrac == null ? 1 : o.hpFrac;
-        const seed = o.x * 0.31 + o.y * 0.17;
-        const sides = 5 + Math.floor(hash(seed) * 4);
-        const hgtFull = 12 + hash(seed * 1.7) * 8;
-        const hgt = alive ? hgtFull : hgtFull * 0.16;
-        const rTop = o.r * (alive ? 0.82 : 1.1);
-        const cy = hgt / 2;
-        const jitterAmp = alive ? 0 : o.r * 0.55;
-        const jitterFn = jitterAmp ? (i) => (hash(seed + i * 3.3) - 0.5) * jitterAmp : null;
-        const shape = prismShape([o.x, cy, o.y], AXIS_Y, hgt / 2, rTop, o.r, sides, { jitter: jitterFn });
-        const baseColor = alive ? '#5c5850' : '#38352f';
-        const col2 = mixColor(baseColor, '#151310', (1 - hpFrac) * 0.5);
-        shape.faces.forEach((f) => out.push({ verts: f.map((vi) => shape.verts[vi]), color: col2, alpha: 1 }));
-        if (alive && hpFrac < 0.999) {
-          for (let c = 0; c < 2; c++) {
-            const a = hash(seed * 5.1 + c * 9.3) * Math.PI * 2;
-            const top = [o.x + Math.cos(a) * o.r * 0.7, hgt * (0.4 + c * 0.3), o.y + Math.sin(a) * o.r * 0.7];
-            const bot = [o.x + Math.cos(a) * o.r * 0.9, 0.2, o.y + Math.sin(a) * o.r * 0.9];
-            out.push({ isLine: true, verts: [top, bot], color: 'rgba(10,10,8,0.7)' });
-          }
-        }
-      } else if (o.kind === 'mud') {
-        // ④ 泥地(沼): 地面より明度・彩度を上げた濁った緑褐色の水面+油膜の同心リング+泡+光る外縁で
-        //    「足を取る危険な水場」と一目で分かるように(暗い夜テーマでも沈まない)。
-        if (o.alive === false) return;
-        const sides = 12;
-        const seed = o.x * 0.21 + o.y * 0.29;
-        const verts = [];
-        for (let i = 0; i < sides; i++) {
-          const a = (i / sides) * Math.PI * 2;
-          const jitter = 0.78 + hash(seed + i * 4.1) * 0.36;
-          verts.push([o.x + Math.cos(a) * o.r * jitter, 0.05, o.y + Math.sin(a) * o.r * jitter]);
-        }
-        // 巨大な1枚面は、機体が沼内に入りカメラが近づくと手前側頂点がカメラ背後へ回り近クリップで
-        // 面全体が消える。中心からの三角形ファンに分割し、背後の三角だけがクリップされるようにする。
-        const mudCenter = [o.x, 0.05, o.y];
-        for (let i = 0; i < sides; i++) {
-          out.push({ verts: [mudCenter, verts[i], verts[(i + 1) % sides]], color: '#2c3320', alpha: 0.92, noCull: true });
-        }
-        // 油膜の同心リング(2重)
-        for (let ring = 1; ring <= 2; ring++) {
-          const rr = o.r * (0.38 + ring * 0.28);
-          const rv = [];
-          for (let i = 0; i < sides; i++) {
-            const a = (i / sides) * Math.PI * 2;
-            rv.push([o.x + Math.cos(a) * rr, 0.07, o.y + Math.sin(a) * rr]);
-          }
-          const rc = ring === 1 ? 'rgba(130,160,85,0.42)' : 'rgba(95,125,72,0.28)';
-          for (let i = 0; i < sides; i++) out.push({ isLine: true, verts: [rv[i], rv[(i + 1) % sides]], color: rc });
-        }
-        // 光る外縁
-        for (let i = 0; i < sides; i++) {
-          const p0 = verts[i], p1 = verts[(i + 1) % sides];
-          out.push({ isLine: true, verts: [add(p0, [0, 0.02, 0]), add(p1, [0, 0.02, 0])], color: 'rgba(175,185,115,0.5)' });
-        }
-        // 泡(小さな明点)
-        for (let i = 0; i < 3; i++) {
-          const hn = hash(seed * 2.3 + i * 5.7);
-          const ba = hn * Math.PI * 2, br = hash(hn + i) * o.r * 0.68;
-          const sh = octaShape(o.x + Math.cos(ba) * br, 0.12, o.y + Math.sin(ba) * br, 0.16 + hash(hn * 3.1) * 0.12);
-          sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: '#4a5535', alpha: 0.9 }));
-        }
-      } else if (o.kind === 'spike') {
-        // ④ 茨(トゲ): 高く鋭い暗色の錐+光る危険色の先端+赤茶の警告リングで「踏むと痛い」を明示。
-        if (o.alive === false) return;
-        const seed = o.x * 0.37 + o.y * 0.13;
-        const n = 6 + Math.floor(hash(seed) * 5);
-        // 危険域の警告リング
-        const rs = 14, rv = [];
-        for (let i = 0; i < rs; i++) {
-          const a = (i / rs) * Math.PI * 2;
-          rv.push([o.x + Math.cos(a) * o.r, 0.06, o.y + Math.sin(a) * o.r]);
-        }
-        for (let i = 0; i < rs; i++) out.push({ isLine: true, verts: [rv[i], rv[(i + 1) % rs]], color: 'rgba(205,72,40,0.5)' });
-        for (let i = 0; i < n; i++) {
-          const hn = hash(seed + i * 11.3);
-          const ang = hn * Math.PI * 2;
-          const rad = hash(hn * 3.3 + i) * o.r * 0.82;
-          const cx = o.x + Math.cos(ang) * rad, cz = o.y + Math.sin(ang) * rad;
-          const hgt = 1.8 + hash(hn * 7.7) * 2.2;   // より高く鋭く
-          const br = 0.24 + hash(hn) * 0.14;
-          const shape = prismShape([cx, hgt / 2, cz], AXIS_Y, hgt / 2, 0, br, 6);
-          shape.faces.forEach((f) => out.push({ verts: f.map((vi) => shape.verts[vi]), color: '#3a3d33', alpha: 1 }));
-          // 光る鋭端(危険色)
-          const tip = prismShape([cx, hgt - 0.16, cz], AXIS_Y, 0.16, 0, br * 0.5, 6);
-          tip.faces.forEach((f) => out.push({ verts: f.map((vi) => tip.verts[vi]), color: '#ff5a2a', alpha: 1, emissive: true }));
-        }
-      }
-    });
-  }
-
-  // ⑤ シェーディング: キーライト+フィル+環境光の拡散に、視線基準のリム(輪郭光)と鏡面ハイライトを
-  //    足した簡易金属モデル。単調なフラット塗りから「面が立って見える」立体感へ(AC/バーチャロン風)。
-  //    影側は寒色(青)へ、当たり/縁は白青へ寄せて冷たい金属質を出す。_camFwd は render 冒頭で更新。
-  function shade(colorStr, normal, isEmissive) {
-    if (isEmissive) return colorStr;
-    const rgb = hexToRgb(colorStr);
-    const key = Math.max(0, dot(normal, LIGHT_KEY));
-    const fill = Math.max(0, dot(normal, LIGHT_FILL));
-    const diff = 0.2 + key * 0.98 + fill * 0.3;          // 環境+主光+補助光
-    const viewToSurf = _camFwd;                            // カメラ前方(eye→対象)
-    const half = normalize(sub(LIGHT_KEY, viewToSurf));    // 光源方向 - 視線方向(ハーフベクトル)
-    const spec = Math.pow(Math.max(0, dot(normal, half)), 24) * 0.55;   // 鏡面ハイライト
-    const facing = Math.max(0, -dot(normal, viewToSurf));  // 法線が視点を向く度合い
-    const rim = Math.pow(1 - facing, 3) * 0.45;            // フレネル的な輪郭光
-    let r = rgb.r * diff, g = rgb.g * diff, b = rgb.b * diff;
-    const shadowT = clamp01(1 - diff);                     // 暗部ほど寒色へ
-    b += shadowT * 26; r -= shadowT * 6;
-    const hi = (spec + rim) * 255;                         // 鏡面+リムは白青
-    r += hi * 0.85; g += hi * 0.92; b += hi;
-    return `rgb(${clampByte(r)},${clampByte(g)},${clampByte(b)})`;
-  }
-
-  function render(scene, tSec) {
-    const W = canvas.width, H = canvas.height;
-    if (!W || !H) return;
-    const t = tSec || 0;
-    scene = scaleScene(scene);   // シム座標→3D描画座標へ相似縮小(機体サイズは不変)。以降すべて縮小後の座標で描く。
-    const cam = computeCamera(scene, t);
-    _camFwd = cam.forward || [0, 0, 1];
-    const theme = themeOf(scene);
-
-    let flatF = normalize([cam.forward[0], 0, cam.forward[2]]);
-    if (!isFinite(flatF[0])) flatF = [0, 0, 1];
-    const horizonCp = toCamera(cam, add(cam.eye, scaleV(flatF, 100000)));
-    let hy = H * 0.5;
-    if (horizonCp[2] > 1) hy = project(horizonCp, W, H)[1];
-    hy = Math.max(H * 0.06, Math.min(H * 0.94, hy));
-    const sky = ctx.createLinearGradient(0, 0, 0, hy);
-    sky.addColorStop(0, theme.sky[0]);
-    sky.addColorStop(0.62, theme.sky[1]);
-    sky.addColorStop(0.9, theme.sky[2]);
-    sky.addColorStop(1, theme.sky[3]);
-    ctx.fillStyle = sky;
-    ctx.fillRect(0, 0, W, Math.ceil(hy));
-    const gnd = ctx.createLinearGradient(0, hy, 0, H);
-    gnd.addColorStop(0, theme.ground[0]);
-    gnd.addColorStop(0.25, theme.ground[1]);
-    gnd.addColorStop(1, theme.ground[2]);
-    ctx.fillStyle = gnd;
-    ctx.fillRect(0, Math.floor(hy), W, H - Math.floor(hy) + 1);
-
-    const drawList = [];
-
-    world.faces.forEach((f) => drawList.push({ verts: f.verts, color: theme.mountain(f.shade), alpha: 1, noCull: !!f.noCull }));
-
-    world.gridLines.forEach((line) => {
-      const mid = [(line[0][0] + line[1][0]) / 2, 0, (line[0][2] + line[1][2]) / 2];
-      const d = length(sub(mid, cam.eye));
-      const a = Math.max(0, 1 - d / 420);
-      if (a <= 0.02) return;
-      const [gr, gg, gb] = theme.gridLine;
-      drawList.push({ verts: line, isLine: true, color: `rgba(${gr},${gg},${gb},${(a * 0.35).toFixed(3)})` });
-    });
-
-    obstacleWorldFaces(scene, drawList);
-
-    (scene.mechs || []).forEach((m) => {
-      const tmp = [];
-      poseMechFaces(m, t, tmp);
-      tmp.forEach((x) => drawList.push(x));
-    });
-
-    shotWorldFaces(scene, cam, drawList);
-    blastWorldFaces(scene, drawList, t);
-
-    const renderables = [];
-    for (const item of drawList) {
-      if (item.isLine) {
-        const c0 = toCamera(cam, item.verts[0]);
-        const c1 = toCamera(cam, item.verts[1]);
-        if (c0[2] < 0.15 || c1[2] < 0.15) continue;
-        const avgZ = (c0[2] + c1[2]) / 2;
-        renderables.push({ isLine: true, p0: c0, p1: c1, color: item.color, avgZ });
-        continue;
-      }
-      const cverts = item.verts.map((p) => toCamera(cam, p));
-      if (cverts.some((c) => c[2] < 0.12)) continue;
-      if (!item.noCull && cverts.length >= 3) {
-        const n = cross(sub(cverts[1], cverts[0]), sub(cverts[2], cverts[0]));
-        if (dot(n, cverts[0]) < 0) continue;
-      }
-      const avgZ = cverts.reduce((s, c) => s + c[2], 0) / cverts.length;
-      let normalWorld = null;
-      if (item.verts.length >= 3) {
-        normalWorld = normalize(cross(sub(item.verts[1], item.verts[0]), sub(item.verts[2], item.verts[0])));
-      }
-      renderables.push({ cverts, color: item.color, alpha: item.alpha == null ? 1 : item.alpha, emissive: item.emissive, avgZ, normalWorld });
-    }
-
-    renderables.sort((a, b) => b.avgZ - a.avgZ);
-
-    for (const r of renderables) {
-      if (r.isLine) {
-        const p0 = project(r.p0, W, H), p1 = project(r.p1, W, H);
-        ctx.save();
-        ctx.strokeStyle = r.color;
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
-        ctx.restore();
-        continue;
-      }
-      const pts = r.cverts.map((c) => project(c, W, H));
-      const fill = r.normalWorld ? shade(r.color, r.normalWorld, r.emissive) : r.color;
-      ctx.save();
-      ctx.globalAlpha = r.alpha;
-      ctx.beginPath();
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-      ctx.closePath();
-      ctx.fillStyle = fill;
-      ctx.fill();
-      if (r.emissive) {
-        ctx.strokeStyle = r.color;
-        ctx.lineWidth = 1;
-        ctx.globalAlpha = r.alpha * 0.8;
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-
-    (scene.mechs || []).forEach((m) => {
-      if (!m.mesh) return;
-      const tmp = [];
-      poseMechFaces(m, t, tmp);
-      // ⑤ エッジ線は「面陰影を主役にする」ため、明るい白縁から暗いパネルライン寄りへ。線が支配して
-      //    ワイヤーフレームに見えていた状態を弱め、シェーディングされた立体面が主に読めるようにする。
-      const edgeColor = mixColor(m.mesh.color, '#0a0e16', m.alive === false ? 0.6 : 0.4);
-      ctx.save();
-      ctx.strokeStyle = edgeColor;
-      ctx.globalAlpha = m.alive === false ? 0.2 : 0.34;
-      ctx.lineWidth = 1;
-      for (const item of tmp) {
-        const cverts = item.verts.map((p) => toCamera(cam, p));
-        if (cverts.some((c) => c[2] < 0.12)) continue;
-        const n = cross(sub(cverts[1], cverts[0]), sub(cverts[2], cverts[0]));
-        if (dot(n, cverts[0]) < 0) continue;
-        const pts = cverts.map((c) => project(c, W, H));
-        ctx.beginPath();
-        ctx.moveTo(pts[0][0], pts[0][1]);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-        ctx.closePath();
-        ctx.stroke();
-      }
-      ctx.restore();
-    });
-
-    const mk = scene.mechs || [];
-    if (cam.showMarkers !== false && mk.length === 2 && mk[1] && mk[1].alive !== false) {
-      const distM = Math.hypot(mk[1].x - mk[0].x, mk[1].y - mk[0].y);
-      if (distM > 90) {
-        const cp = toCamera(cam, [mk[1].x, 11.5 * MECH_SCALE, mk[1].y]);
-        if (cp[2] > 1) {
-          const pt = project(cp, W, H);
-          const sx = pt[0], sy = pt[1];
-          if (sx > -40 && sx < W + 40 && sy > -40 && sy < H + 40) {
-            const s = Math.max(6, W * 0.018);
-            const occ = !!mk[1].occluded;   // 自機→敵機の射線が壁で遮蔽されている
-            ctx.save();
-            ctx.strokeStyle = occ ? 'rgba(255,170,90,0.55)' : 'rgba(255,120,90,0.85)';
-            ctx.lineWidth = Math.max(1, W / 420);
-            if (occ) ctx.setLineDash([4, 3]);
-            ctx.beginPath();
-            ctx.moveTo(sx - s, sy - s * 1.7); ctx.lineTo(sx + s, sy - s * 1.7); ctx.lineTo(sx, sy - s * 0.4);
-            ctx.closePath(); ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.fillStyle = occ ? 'rgba(255,190,130,0.85)' : 'rgba(255,150,120,0.95)';
-            ctx.font = Math.max(10, W / 38) + 'px ui-monospace, Menlo, monospace';
-            ctx.textAlign = 'center';
-            ctx.fillText((occ ? '遮蔽 ' : '') + Math.round(distM) + 'm', sx, sy - s * 2.3);
-            ctx.restore();
-          }
-        }
-      }
-    }
-  }
-
-  return { render };
-}
+// 旧・自作ソフトウェアラスタライザ createR3D は St2第3段完了をもって撤去(人間承認 2026-07-24)。
+// 観戦3Dは Three 版(r3d-three.js)のみ。姿勢/演出の共有関数群(computeMechPose・poseMechFaces・
+// SHOT_STYLES 系・obstacleWorldFaces・カメラ director)はこのファイルが唯一の真実として残る。

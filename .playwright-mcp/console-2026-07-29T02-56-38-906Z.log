@@ -1,0 +1,6 @@
+[     116ms] [WARNING] goatcounter: not counting because of: localhost @ http://gc.zgo.at/count.js:79
+[     260ms] [ERROR] Access to fetch at 'https://fable-kouki.d3j.workers.dev/auth/me' from origin 'http://localhost:8765' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ http://localhost:8765/index.html:0
+[     260ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://fable-kouki.d3j.workers.dev/auth/me:0
+[    1133ms] [ERROR] Access to fetch at 'https://fable-kouki.d3j.workers.dev/arena/top' from origin 'http://localhost:8765' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ http://localhost:8765/index.html:0
+[    1133ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://fable-kouki.d3j.workers.dev/arena/top:0
+[   10172ms] [WARNING] THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead. @ http://localhost:8765/vendor/three.core.min.js:5

@@ -2,16 +2,30 @@
 // 管制(sys)は sim の電文ログをそのまま流用する(MMオマージュの正本・全文コピー対象)。
 import { VOICE_ROLES, LINES } from './voice-lines.js';
 import { mulberry32, PART_JA } from './sim.js';
+import { getPart } from './parts.js';
 export { VOICE_ROLES };
 
 const BIG_DMG = 60;
+const LONG_FIRE_DIST = 380;   // これ以上の距離からの発砲は「遠距離戦」として拾う
 
-// narrate(result, {nameA, nameB, fieldName, seed}) → [{t, role, text}] (t昇順)
+// narrate(result, {nameA, nameB, fieldName, seed, buildA, buildB}) → [{t, role, text}] (t昇順)
+// buildA/buildB(任意)を渡すとパーツ連動の実況が乗る: 開幕ロードアウト紹介・脚種別の回避/脚部破損。
 export function narrate(result, opts = {}) {
   const rng = mulberry32((opts.seed == null ? 1 : opts.seed) ^ 0x5bd1e995);
   const names = [opts.nameA || 'α機', opts.nameB || 'β機'];
   const fieldName = opts.fieldName || (result.field && result.field.name) || '';
   const out = [];
+
+  // --- St3: build からパーツ連動の語彙を引く(未指定なら全て従来動作) ---
+  const builds = [opts.buildA || null, opts.buildB || null];
+  const legPart = builds.map((b) => (b ? getPart('legs', b.legs) : null));
+  const legKind = legPart.map((lp) => (lp ? lp.kind : null));
+  const wpnSummary = builds.map((b) => {
+    if (!b) return '';
+    const wr = getPart('wpn', b.wpnR), wl = getPart('wpn', b.wpnL);
+    if (!wr || !wl) return '';
+    return wr.name === wl.name ? `二挺の${wr.name}` : `${wr.name}と${wl.name}`;
+  });
 
   // --- 管制: 電文ログをそのまま(タイムスタンプを剥がして t を取る) ---
   for (const line of (result.log || [])) {
@@ -34,10 +48,13 @@ export function narrate(result, opts = {}) {
       DIST: e && e.dist != null ? String(e.dist) : '',
       HP: e && e.hpPct != null ? String(e.hpPct) : '',
       PART: e && e.part ? (PART_JA[e.part] || '') : '',
+      LEGA: legPart[0] ? legPart[0].name : '',
+      LEGB: legPart[1] ? legPart[1].name : '',
+      WA: wpnSummary[0], WB: wpnSummary[1],
     };
   }
   function fill(tpl, ctx) {
-    return tpl.replace(/\{(A|B|ME|FOE|WPN|DMG|DIST|HP|FIELD|PART)\}/g, (_, k) => ctx[k] || '');
+    return tpl.replace(/\{(A|B|ME|FOE|WPN|DMG|DIST|HP|FIELD|PART|LEGA|LEGB|WA|WB)\}/g, (_, k) => ctx[k] || '');
   }
   // 武器カテゴリ(kind@cat のバンクがあれば優先=「ライフルにパンチと言わない」)
   const catOf = (wpnKind) => wpnKind === 'rifle' || wpnKind === 'shotgun' ? 'gun'
@@ -77,6 +94,11 @@ export function narrate(result, opts = {}) {
   say(0, 'kai', 'start', { }, { force: true, dt: 0.9 });
   say(0, 'pilotA', 'start', { }, { force: true, dt: 1.8 });
   say(0, 'pilotB', 'start', { }, { force: true, dt: 2.6 });
+  // St3: ロードアウト紹介(builds があるときのみ。解説が主・実況は時々被せる)
+  if (legPart[0] && legPart[1]) {
+    say(0, 'kai', 'start_build', { }, { force: true, dt: 3.6 });
+    say(0, 'ana', 'start_build', { }, { p: 0.4, force: true, dt: 5.0 });
+  }
 
   for (const e of result.events) {
     if (e.kind === 'fire') {
@@ -90,6 +112,11 @@ export function narrate(result, opts = {}) {
         meleeCool = e.t;
         say(e.t, pilotOf(e.who), 'melee_fire', e, { p: 0.5 });
         say(e.t, 'ana', 'melee_fire', e, { p: 0.45, dt: 0.3 });
+      }
+      // St3: 遠距離からの発砲を時々拾う(fire@long バンク直指定。{DIST} は fire 系のみの掟に適合)
+      if (!e.rip && e.dist != null && e.dist >= LONG_FIRE_DIST) {
+        say(e.t, 'ana', 'fire', e, { p: 0.10, cat: 'long' });
+        say(e.t, 'kai', 'fire', e, { p: 0.07, dt: 1.0, cat: 'long' });
       }
     } else if (e.kind === 'hit') {
       const hpPct = maxHp[e.targ] ? Math.round(100 * e.remain / maxHp[e.targ]) : null;
@@ -126,8 +153,12 @@ export function narrate(result, opts = {}) {
         say(e.t, 'ana', 'graze', e2, { p: 0.4, dt: 0.3 });
         say(e.t, 'kai', 'graze', e2, { p: 0.3, dt: 1.1 });
       } else {
+        // St3: 回避側の脚種バンク(dodge@hover 等)があれば優先し、拾う確率も上げる(見せ場になった)
+        const lk = legKind[e.targ];
+        const flavored = lk && LINES['dodge@' + lk];
         say(e.t, pilotOf(e.targ), 'dodge', e, { p: 0.2 });
-        say(e.t, 'ana', 'dodge', e, { p: 0.15, dt: 0.3 });
+        say(e.t, 'ana', 'dodge', e, { p: flavored ? 0.3 : 0.15, dt: 0.3, cat: lk });
+        if (flavored) say(e.t, 'kai', 'dodge', e, { p: 0.16, dt: 1.0, cat: lk });
       }
     } else if (e.kind === 'parry') {
       say(e.t, 'ana', 'parry', e, { p: 0.8, force: true });
@@ -143,9 +174,11 @@ export function narrate(result, opts = {}) {
       say(e.t, 'ana', 'obs_down', e, { p: 0.85, force: true });
       say(e.t, 'kai', 'obs_down', e, { p: 0.4, dt: 1.0 });
     } else if (e.kind === 'pbreak') {
+      // St3: 脚部破損は破損機の脚種バンク(pbreak@quad 等)を優先(履帯に「脚が折れた」と言わない)
+      const pcat = e.part === 'legs' ? legKind[e.who] : null;
       say(e.t, pilotOf(e.who), 'pbreak', e, e.lvl >= 3 ? { force: true } : { p: e.lvl >= 2 ? 0.9 : 0.5 });
-      say(e.t, 'ana', 'pbreak', e, { p: e.lvl >= 2 ? 0.7 : 0.25, dt: 0.5 });
-      say(e.t, 'kai', 'pbreak', e, { p: 0.4, dt: 1.2 });
+      say(e.t, 'ana', 'pbreak', e, { p: e.lvl >= 2 ? 0.7 : 0.25, dt: 0.5, cat: pcat });
+      say(e.t, 'kai', 'pbreak', e, { p: 0.4, dt: 1.2, cat: pcat });
     } else if (e.kind === 'self_hit') {
       say(e.t, pilotOf(e.who), 'self_hit', e, { force: true });
       say(e.t, 'ana', 'self_hit', e, { p: 0.6, dt: 0.6 });

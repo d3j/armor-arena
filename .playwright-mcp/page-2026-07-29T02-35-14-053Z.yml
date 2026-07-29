@@ -1,0 +1,41 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: 鋼機工廠
+        - generic [ref=e7]: K O K I K O S H O
+      - paragraph [ref=e8]: 組み上げた鋼機(こうき)が自律で戦う。試合は実況/レーダー/3Dの三面で観戦できる。— いにしえの自律対戦シミュレータへのオマージュ —
+      - generic [ref=e9]:
+        - button "▶ 出撃(演習)" [ref=e10] [cursor=pointer]
+        - button "⚙ 工廠(機体を組む)" [ref=e11] [cursor=pointer]
+        - button "◈ 闘技場(ネット対戦)" [ref=e12] [cursor=pointer]
+        - button "▦ カタログ" [ref=e13] [cursor=pointer]
+      - generic [ref=e14]:
+        - generic [ref=e15]:
+          - generic [ref=e16] [cursor=pointer]:
+            - generic [ref=e17]:
+              - generic [ref=e18]: ▶
+              - generic [ref=e19]: アサヒ
+              - generic [ref=e20]: Lv1
+            - generic [ref=e21]:
+              - generic [ref=e22]: 名誉 50
+              - generic [ref=e23]: 健在
+            - button "解雇" [ref=e25]
+          - generic [ref=e26]:
+            - generic [ref=e27]: — 空き枠 —
+            - generic [ref=e28]:
+              - textbox "パイロット名" [ref=e29]
+              - button "+ 登録" [ref=e30] [cursor=pointer]
+          - generic [ref=e31]:
+            - generic [ref=e32]: — 空き枠 —
+            - generic [ref=e33]:
+              - textbox "パイロット名" [ref=e34]
+              - button "+ 登録" [ref=e35] [cursor=pointer]
+        - button "⚰ 墓場(0)" [ref=e36] [cursor=pointer]
+      - generic [ref=e37]:
+        - generic [ref=e38]: "所持クレジット: 3000 C"
+        - generic [ref=e39]: 🎖 0
+      - button "ログイン" [ref=e41] [cursor=pointer]
+    - link "← 一覧へ" [ref=e43] [cursor=pointer]:
+      - /url: ../
+  - generic: 開発版(シム調整用)— 通信・リプレイは無効

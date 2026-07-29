@@ -120,7 +120,7 @@ var LOG_FILTERS = [
   { key: 'sys', label: '管制' }
 ];
 
-/* ---- 結果シェアボタン(export不要・showResult/showAftermath 共通実装。../lib/share.js の window.FableShare を利用) ---- */
+/* ---- 結果シェアボタン(export不要・showResult/showAftermath 共通実装。lib/share.js の window.FableShare を利用) ---- */
 function shareBtnEl(shareData, label) {
   var btn = h('button', { class: 'primary' }, [label || '📤 結果をシェア']);
   btn.addEventListener('click', function () {
@@ -266,6 +266,20 @@ export function createUI(root, hooks) {
   var nameInput = h('input', { type: 'text', maxlength: 16, placeholder: '機体名(自分だけに表示)' });
   var slotGrid = h('div', { class: 'slot-grid' });
   var equipBtn = h('button', { class: 'primary', style: 'width:100%' }, ['この機体で出撃']);
+  /* プレビュー用 canvas は「一度だけ」作って使い回す。renderStatsPanel はパーツを選ぶたびに走るため、
+     ここで新しい canvas を作ると game.js 側が毎回 WebGL コンテキストを作り直す(=コンテキスト上限で
+     古い描画が失われる)。mount() は同じ要素を渡せば付け替えになるので、要素の同一性を保つ。 */
+  var previewCanvas = h('canvas', { class: 'mech-preview' });
+  var viewerOpenBtn = h('button', { class: 'small ghost viewer-open' }, ['⛶ 機体鑑賞 — 手で動かして眺める']);
+  viewerOpenBtn.addEventListener('click', function () {
+    // 前回「撃破」のまま倒れている/歩き出したままにしない(開いたら必ず直立・停止から)
+    viewerIn.move = 'stop'; viewerIn.turn = 0; viewerIn.queue.push('rise');
+    // 鑑賞用ビルドは開くたびに工廠の現在構成からコピーし直す(前回の構成送りを持ち越さない)
+    var hb = state.lastHangar && state.lastHangar.build;
+    viewerBuild = hb ? JSON.parse(JSON.stringify(hb)) : null;
+    viewerStats = (state.lastHangar && state.lastHangar.stats) || null;
+    renderViewer(); ui.showScreen('viewer');
+  });
 
   nameInput.addEventListener('input', function () {
     if (state.lastHangar && state.lastHangar.build) {
@@ -315,7 +329,8 @@ export function createUI(root, hooks) {
     }
     mount(statsPanel, [
       h('h3', {}, ['機体ステータス']),
-      h('canvas', { class: 'mech-preview' }),
+      previewCanvas,
+      viewerOpenBtn,
       gauge('HP', stats.hp || 0, maxRef.hp),
       gauge('速度', stats.speed || 0, maxRef.speed),
       gauge('回避', (stats.evasion || 0) * 100, maxRef.evasion, { fmt: function (v) { return Math.round(v) + '%'; } }),
@@ -455,6 +470,250 @@ export function createUI(root, hooks) {
     }
     mount(slotGrid, cells);
   }
+
+  /* ===================== viewer(機体鑑賞) =====================
+     工廠の機体を手で動かして眺める画面。キーボードは使わず「全ての動作をボタンで選ぶ」。
+     ここが持つのは DOM と入力状態(viewerIn)だけで、時計・姿勢・カメラ計算は game.js の
+     viewerTick が毎フレーム ui.viewerInput() を読んで進める(描画契約は r3d.js の scene と同じ)。 */
+  var VIEWER_MOVES = [
+    { key: 'stop',  label: '■ 停止' },
+    { key: 'fwd',   label: '▲ 前進' },
+    { key: 'back',  label: '▼ 後退' },
+    { key: 'left',  label: '◀ 左移動' },
+    { key: 'right', label: '右移動 ▶' }
+  ];
+  var VIEWER_SPEEDS = [
+    { key: 'slow',   label: '低速', mul: 0.30 },   // 大股のゆっくりした重い足取り(歩幅が伸びる)
+    { key: 'cruise', label: '巡航', mul: 0.65 },
+    { key: 'full',   label: '全速', mul: 1.00 }
+  ];
+  var VIEWER_TURNS = [
+    { key: -1, label: '↺ 左旋回' },
+    { key: 0,  label: '旋回停止' },
+    { key: 1,  label: '右旋回 ↻' }
+  ];
+  /* カメラ位置は機体の向きを基準にした方位角 az[deg](0=正面から顔を見る / 180=背面)と仰角 el[deg]。 */
+  var VIEWER_CAMS = [
+    { key: 'orbit',   label: '自動周回',     az: 38,  el: 16 },
+    { key: 'front',   label: '正面',         az: 0,   el: 11 },
+    { key: 'quarter', label: '斜め前',       az: 38,  el: 16 },
+    { key: 'side',    label: '側面',         az: 90,  el: 11 },
+    { key: 'rear',    label: '背面',         az: 180, el: 12 },
+    { key: 'top',     label: '俯瞰',         az: 45,  el: 52 },
+    { key: 'low',     label: 'ローアングル', az: 25,  el: -9 }
+  ];
+  var VIEWER_DIST = { min: 3.4, max: 24 };
+
+  var viewerIn = {
+    move: 'stop', speedKey: 'cruise', speedMul: 0.65, turn: 0,
+    cam: 'quarter', az: 38, el: 16, dist: 7.6,
+    repeat: false,
+    queue: []      // 単発アクション(game.js が毎フレーム空にする)
+  };
+  /* 鑑賞用ビルドは出撃機体(S.current)の「コピー」。構成送り/カラーはこのコピーだけを書き換え、
+     保存も工廠への反映もしない(高額構成に送ると演習が予算超過で出撃不能になる事故の再発防止)。
+     開くたびに viewerOpenBtn で工廠の現在構成から作り直す。 */
+  var viewerBuild = null, viewerStats = null;
+  function viewerDerive() {
+    if (hooks.onDeriveStats && viewerBuild) viewerStats = hooks.onDeriveStats(viewerBuild);
+  }
+
+  var viewerCanvas = h('canvas', { class: 'mech-viewer' });   // 使い回す(WebGLコンテキストを作り直さない)
+  var viewerMoveRow = h('div', { class: 'vw-btn-row' });
+  var viewerSpeedRow = h('div', { class: 'vw-btn-row' });
+  var viewerTurnRow = h('div', { class: 'vw-btn-row' });
+  var viewerActRow = h('div', { class: 'vw-btn-row' });
+  var viewerCamRow = h('div', { class: 'vw-btn-row' });
+  var viewerPartRows = h('div', { class: 'vw-part-list' });
+  var viewerColorRow = h('div', { class: 'color-row' });
+  var viewerInfo = h('div', { class: 'vw-info' });
+
+  function viewerQueue(a) { viewerIn.queue.push(a); }
+  function viewerCamPreset(key) {
+    var c = VIEWER_CAMS.filter(function (x) { return x.key === key; })[0] || VIEWER_CAMS[2];
+    viewerIn.cam = c.key; viewerIn.az = c.az; viewerIn.el = c.el;
+    renderViewerCams();
+  }
+  function viewerZoom(mul) {
+    viewerIn.dist = clamp(viewerIn.dist * mul, VIEWER_DIST.min, VIEWER_DIST.max);
+  }
+
+  function renderViewerMoves() {
+    mount(viewerMoveRow, VIEWER_MOVES.map(function (m) {
+      return h('button', {
+        class: 'small' + (viewerIn.move === m.key ? ' active' : ''),
+        onclick: function () { viewerIn.move = m.key; renderViewerMoves(); }
+      }, [m.label]);
+    }));
+    mount(viewerSpeedRow, VIEWER_SPEEDS.map(function (s) {
+      return h('button', {
+        class: 'small' + (viewerIn.speedKey === s.key ? ' active' : ''),
+        onclick: function () { viewerIn.speedKey = s.key; viewerIn.speedMul = s.mul; renderViewerMoves(); }
+      }, [s.label]);
+    }));
+    mount(viewerTurnRow, VIEWER_TURNS.map(function (t) {
+      return h('button', {
+        class: 'small' + (viewerIn.turn === t.key ? ' active' : ''),
+        onclick: function () { viewerIn.turn = t.key; renderViewerMoves(); }
+      }, [t.label]);
+    }));
+  }
+  function renderViewerCams() {
+    mount(viewerCamRow, VIEWER_CAMS.map(function (c) {
+      return h('button', {
+        class: 'small' + (viewerIn.cam === c.key ? ' active' : ''),
+        onclick: function () { viewerCamPreset(c.key); }
+      }, [c.label]);
+    }).concat([
+      h('button', { class: 'small', onclick: function () { viewerZoom(0.82); } }, ['🔍 寄る']),
+      h('button', { class: 'small', onclick: function () { viewerZoom(1.22); } }, ['🔍 引く']),
+      h('button', {
+        class: 'small' + (viewerIn.cam === 'free' ? ' active' : ''),
+        onclick: function () { viewerIn.cam = 'free'; renderViewerCams(); }
+      }, ['手動(画面をドラッグ)'])
+    ]));
+  }
+  function renderViewerActs() {
+    var st = state.lastHangar || {};
+    var b = viewerBuild || st.build || {};
+    var wpns = (st.parts || {}).wpn || [];
+    function wname(id) {
+      var p = wpns.filter(function (x) { return x.id === id; })[0];
+      return p ? p.name : '—';
+    }
+    var acts = [
+      { a: 'atkR',   label: '右腕攻撃 / ' + wname(b.wpnR), cls: ' primary' },
+      { a: 'atkL',   label: '左腕攻撃 / ' + wname(b.wpnL), cls: ' primary' },
+      { a: 'hit',    label: '被弾(のけぞる)', cls: '' },
+      { a: 'dodgeR', label: '回避 右', cls: '' },
+      { a: 'dodgeL', label: '回避 左', cls: '' },
+      { a: 'down',   label: '撃破(崩れ落ちる)', cls: ' danger' },
+      { a: 'rise',   label: '再起動(立ち上がる)', cls: '' }
+    ];
+    mount(viewerActRow, acts.map(function (x) {
+      return h('button', { class: 'small' + x.cls, onclick: function () { viewerQueue(x.a); } }, [x.label]);
+    }).concat([
+      h('button', {
+        class: 'small' + (viewerIn.repeat ? ' active' : ''),
+        onclick: function () { viewerIn.repeat = !viewerIn.repeat; renderViewerActs(); }
+      }, ['🔁 くり返し'])
+    ]));
+  }
+  /* パーツ送り: 増えていくバリエーションを、画面を出たり入ったりせず見比べるための ◀ ▶。
+     書き換えるのは鑑賞用コピー(viewerBuild)だけ。出撃機体(S.current)には触れない。 */
+  function viewerCycle(catKey, partKey, dir) {
+    var st = state.lastHangar;
+    if (!st || !viewerBuild) return;
+    var list = (st.parts || {})[partKey] || [];
+    if (!list.length) return;
+    var i = list.map(function (p) { return p.id; }).indexOf(viewerBuild[catKey]);
+    var n = ((i < 0 ? 0 : i) + dir + list.length) % list.length;
+    viewerBuild[catKey] = list[n].id;
+    viewerDerive();
+    renderViewerParts(); renderViewerActs(); renderViewerInfo();
+  }
+  function renderViewerParts() {
+    var st = state.lastHangar || {};
+    var b = viewerBuild || st.build || {};
+    mount(viewerPartRows, CATS.map(function (c) {
+      var list = (st.parts || {})[c.partKey] || [];
+      var cur = list.filter(function (p) { return p.id === b[c.key]; })[0];
+      return h('div', { class: 'vw-part-row' }, [
+        h('button', { class: 'small', onclick: function () { viewerCycle(c.key, c.partKey, -1); } }, ['◀']),
+        h('div', { class: 'vw-part-name' }, [
+          h('span', { class: 'lbl' }, [c.label]),
+          h('span', { class: 'nm' }, [cur ? cur.name : '未選択'])
+        ]),
+        h('button', { class: 'small', onclick: function () { viewerCycle(c.key, c.partKey, 1); } }, ['▶'])
+      ]);
+    }));
+    mount(viewerColorRow, COLOR_PRESETS.map(function (hex) {
+      return h('button', {
+        class: 'swatch' + (hex === b.color ? ' selected' : ''),
+        style: 'background:' + hex,
+        onclick: function () {
+          if (!viewerBuild) return;
+          viewerBuild.color = hex;
+          viewerDerive();
+          renderViewerParts();
+        }
+      }, []);
+    }));
+  }
+  function renderViewerInfo() {
+    var st = state.lastHangar || {};
+    var b = viewerBuild || st.build || null;
+    var stats = viewerStats || st.stats || {};
+    var budget = st.budget || 0;
+    var cost = stats.cost || 0;
+    var over = cost > budget;
+    mount(viewerInfo, [
+      h('div', { class: 'vw-info-name' }, [(b && b.name) || '(無題の鋼機)']),
+      h('div', { class: 'muted' }, [
+        'HP ' + Math.round(stats.hp || 0) + ' ・ 速度 ' + Math.round(stats.speed || 0) +
+        ' ・ 回避 ' + Math.round((stats.evasion || 0) * 100) + '%' +
+        ' ・ 重量 ' + (stats.weight || 0) + '/' + (stats.capacity || 0)
+      ]),
+      h('div', { class: 'muted' + (over ? ' vw-over' : '') }, [
+        '機体総額 ' + cost.toLocaleString() + ' / ' + budget.toLocaleString() + ' C' + (over ? '(予算超過)' : '')
+      ])
+    ]);
+  }
+  function renderViewer() {
+    renderViewerMoves(); renderViewerCams(); renderViewerActs(); renderViewerParts(); renderViewerInfo();
+  }
+
+  /* 画面ドラッグで自由に回す/寄る(ボタンだけでも完結するが、眺める用の直接操作も残す) */
+  (function bindViewerDrag(cv) {
+    var drag = null;
+    cv.addEventListener('pointerdown', function (e) {
+      drag = { x: e.clientX, y: e.clientY };
+      try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+      if (viewerIn.cam !== 'free') { viewerIn.cam = 'free'; renderViewerCams(); }
+    });
+    cv.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      viewerIn.az = (viewerIn.az - (e.clientX - drag.x) * 0.42) % 360;
+      viewerIn.el = clamp(viewerIn.el + (e.clientY - drag.y) * 0.3, -22, 78);
+      drag.x = e.clientX; drag.y = e.clientY;
+    });
+    function end() { drag = null; }
+    cv.addEventListener('pointerup', end);
+    cv.addEventListener('pointercancel', end);
+    cv.addEventListener('pointerleave', end);
+    cv.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      viewerZoom(e.deltaY > 0 ? 1.08 : 0.93);
+    }, { passive: false });
+  })(viewerCanvas);
+
+  var viewerScreen = h('section', { class: 'screen wide', dataset: { screen: 'viewer' } }, [
+    h('h2', { class: 'screen-title' }, ['機体鑑賞 — MECH VIEWER',
+      h('a', { class: 'link', href: '#', onclick: function (e) {
+        e.preventDefault();
+        ui.showScreen('hangar');   // 鑑賞用コピーは持ち帰らない(工廠と出撃機体はそのまま)
+      } }, ['← 工廠へ'])]),
+    h('div', { class: 'viewer-layout row' }, [
+      h('div', { class: 'viewer-stage' }, [viewerCanvas]),
+      h('div', { class: 'viewer-ctl col' }, [
+        h('div', { class: 'panel' }, [h('h3', {}, ['機体']), viewerInfo]),
+        h('div', { class: 'panel' }, [
+          h('h3', {}, ['移動']),
+          viewerMoveRow,
+          h('div', { class: 'vw-sub' }, ['歩調']), viewerSpeedRow,
+          h('div', { class: 'vw-sub' }, ['旋回']), viewerTurnRow
+        ]),
+        h('div', { class: 'panel' }, [h('h3', {}, ['動作']), viewerActRow]),
+        h('div', { class: 'panel' }, [h('h3', {}, ['カメラ']), viewerCamRow]),
+        h('div', { class: 'panel' }, [
+          h('h3', {}, ['構成を替えて見比べる']),
+          viewerPartRows,
+          h('div', { class: 'vw-sub' }, ['カラー']), viewerColorRow
+        ])
+      ])
+    ])
+  ]);
+  els.screens.viewer = viewerScreen;
 
   /* ===================== sortie(演習) ===================== */
   var sortieBody = h('div', { class: 'col' });
@@ -686,7 +945,7 @@ export function createUI(root, hooks) {
 
   mount(root, [
     h('div', { class: 'scanlines', 'aria-hidden': 'true' }),
-    titleScreen, hangarScreen, sortieScreen, arenaScreen, collectionScreen, graveyardScreen, battleScreen, resultScreen,
+    titleScreen, hangarScreen, viewerScreen, sortieScreen, arenaScreen, collectionScreen, graveyardScreen, battleScreen, resultScreen,
     toastHost
   ]);
 
@@ -723,7 +982,15 @@ export function createUI(root, hooks) {
       renderCardList();
       renderColorRow();
       renderSlots();
+      renderViewer();
     },
+
+    /* 機体鑑賞の入力状態(移動/歩調/旋回/カメラ/単発アクション待ち行列)。
+       game.js の viewerTick が毎フレーム読み、queue は読んだ側が空にする。 */
+    viewerInput: function () { return viewerIn; },
+
+    /* 鑑賞中の表示対象ビルド(S.current から分離したコピー)。未オープン時は null。 */
+    viewerBuild: function () { return viewerBuild; },
 
     renderCampaign: function (st) {
       st = st || {};
