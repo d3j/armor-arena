@@ -126,4 +126,9 @@
   本番URLブラウザ再生OK)・v4コード往復(ibara+新パーツ)OK・本番URL実機(工廠/鑑賞/戦闘) console エラー0。
   詳細 making.md「■戦場ハザードのジレンマ設計」。
 - [ ] オンボーディング(初見導線)の作り込み。
-- [ ] OAuth の kodama・kouki 分離(secret 再作成の巻き添え確認)。
+- [ ] OAuth の kodama・kouki 分離(**主管=このリポに一本化。2026-07-29 人間決定**): 現在 kouki は kodama
+  (fable-playground)と同じ Google OAuth App+secret を共用しており、secret 再作成の巻き添え事故が既に1回
+  ある(2026-07-07)。人間作業=Google Cloud Console で kouki 専用 App 作成(同意画面・redirect URI=
+  `https://fable-kouki.d3j.workers.dev/auth/google/callback`)→ `wrangler secret put GOOGLE_CLIENT_SECRET`+
+  wrangler.toml の GOOGLE_CLIENT_ID 差し替え。kodama 側(fable-playground/workers/kodama)の secret 差し替えも
+  着手セッションが面倒を見る。着手時はユーザーと段取り確認。
