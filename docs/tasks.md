@@ -68,16 +68,16 @@
   「⛶ 機体鑑賞」ボタン→専用画面 `data-screen="viewer"`。移動/歩調/旋回/動作/カメラ/構成送りを全ボタン操作、
   姿勢は戦闘と同じ computeMechPose。previewLoop→previewTick 化を含む。※未コミットWIPだったものを 2026-07-28 の
   移設コミット(da0eb64)が同梱して公開済み。実機確認=viewer 表示・canvas 描画・console 0(2026-07-28)。
-  **人間レビューOK(2026-07-29「動作確認OK」)**。本番昇格は St3 と同時に人間判断で。
+  **人間レビューOK(2026-07-29「動作確認OK」)**。**本番昇格済(2026-07-29 commit 7d6a0d2・St3 と同時)**。
 - [x] **鑑賞モードの構成送りが出撃機体(S.current)を書き換える**(2026-07-28 発見)→
-  **修正済(2026-07-29 public/dev)**: 鑑賞用ビルドを S.current のコピーに分離(ui.js viewerBuild、
+  **修正済(2026-07-29 commit 04efd22・同日 7d6a0d2 で本番昇格)**: 鑑賞用ビルドを S.current のコピーに分離(ui.js viewerBuild、
   開くたびに工廠の現構成から作り直し・保存なし・持ち帰りなし。game.js は onDeriveStats=表示専用の
   ステータス再計算を追加し viewerTick/vwFire はコピーを描画)。実機確認: 鑑賞で予算超過3,450Cに送っても
   工廠/出撃機体は2,650Cのまま・localStorage 書込ゼロ・console エラー0。harness(dev) ALL GREEN・
   gait-harness --phys ALL GREEN。ついで掃除: r3d.js GEN_STYLES 残留 size コメント修正・wheels:1 の0除算ガード・
   harness に「{LEGA}〜{WB}は start_build 限定」チェック追加(緑)。
-- [x] **St3=機体の作り込み**(2026-07-28 public/dev に実装・**人間レビューOK 2026-07-29「動作確認OK」**。
-  本番昇格=REPLAY_V 3→4 リリースは別段取り)。参考の文法:
+- [x] **St3=機体の作り込み**(2026-07-28 public/dev に実装・**人間レビューOK 2026-07-29「動作確認OK」**・
+  **本番昇格済 2026-07-29 commit 7d6a0d2=REPLAY_V 3→4 リリースと同時**)。参考の文法:
   メックウォーリア=重量級のスラブ装甲/リベット、アーマード・コア=軽量機のウエスト絞り/肩ブースタ/センサ記号、
   バーチャロン=発光部のヒーローシルエット。4本柱:
   ① **パーツid別の固有形状**(r3d.js mechMesh): フレーム8種=胴プロポーション+胸部意匠+頭部センサ
@@ -117,8 +117,13 @@
   ②deitan=泥の大河・crater=茨の堡塁・新戦場 ibara「茨の回廊」(FIELD_CODES 末尾追記)
   ③hazard-probe.mjs でジレンマを数値実証(wheel 泥滞在31.7→2.2s・突入率83%・判定ゲート4件)。
   harness ALL GREEN(hover支配なし)・check-freeze OK・実機 console 0・Codex 冷読み3件採否済。
-  **リリース(release-sim.mjs で REPLAY_V 3→4+凍結+workers/kouki 再デプロイ)は承認済み(2026-07-29)の
-  次セッション候補**。St3 新パーツ(parts.js 追記分)も同じ v4 に同梱する。
+  **リリース完了(2026-07-29 commit 7d6a0d2)**: release-sim.mjs で REPLAY_V 3→4・sims/v4/ 凍結・
+  replay.js FIELD_CODES に 'ibara' 追記(掟2)・St3 新パーツ9種を同じ v4 に同梱・
+  workers/kouki(fable-kouki)再デプロイ(Version 3f77ddb2)。同コミットで描画/ゲーム側も本番昇格
+  (r3d/r3d-three/game/ui/voice/voice-lines/style、DEV=false 戻し済)。昇格後検証すべて緑:
+  check-freeze OK(v4==live)・harness(本番) ALL GREEN(勝率max64%/min28%)・gait-harness --dir . --phys
+  ALL GREEN・旧v3リプレイコード互換1件実測(Node: decode→sims/v3 再生で states/勝者/ハッシュ完全一致+
+  本番URLブラウザ再生OK)・v4コード往復(ibara+新パーツ)OK・本番URL実機(工廠/鑑賞/戦闘) console エラー0。
   詳細 making.md「■戦場ハザードのジレンマ設計」。
 - [ ] オンボーディング(初見導線)の作り込み。
 - [ ] OAuth の kodama・kouki 分離(secret 再作成の巻き添え確認)。
