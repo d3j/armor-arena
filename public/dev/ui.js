@@ -817,9 +817,10 @@ export function createUI(root, hooks) {
   var battleTabsObj = { btn3d: btn3d, btnRadar: btnRadar, btnLog: btnLog, mode: '3d' };
   function setBattleTab(mode) {
     battleTabsObj.mode = mode;
-    c3d.hidden = mode !== '3d';
-    cradar.hidden = mode !== 'radar';
-    logWrap.hidden = mode !== 'log';
+    var cockpit = !!battleTabsObj.cockpit;   // コックピットHUD中は全ビュー常時表示(タブは選択状態だけ覚える)
+    c3d.hidden = !cockpit && mode !== '3d';
+    cradar.hidden = !cockpit && mode !== 'radar';
+    logWrap.hidden = !cockpit && mode !== 'log';
     [btn3d, btnRadar, btnLog].forEach(function (b) { b.classList.remove('active'); });
     ({ '3d': btn3d, radar: btnRadar, log: btnLog })[mode].classList.add('active');
     if (mode === 'log') { logview.scrollTop = logview.scrollHeight; }
@@ -929,6 +930,21 @@ export function createUI(root, hooks) {
     ])
   ]);
   els.screens.battle = battleScreen;
+
+  /* ---- コックピットHUD(ワイド画面 ≥1100px): タブを廃し 3D全面+レーダーPiP+実況フィードを同時表示。
+         .cockpit の付け外しはここが単一の責任者(game.js は tabs.cockpit を読むだけ)。 ---- */
+  var cockpitMQ = window.matchMedia('(min-width: 1100px)');
+  function applyCockpit() {
+    var on = cockpitMQ.matches;
+    battleTabsObj.cockpit = on;
+    battleScreen.classList.toggle('cockpit', on);
+    setBattleTab(battleTabsObj.mode);   // 表示/非表示は setBattleTab が cockpit を見て一元処理
+    if (on) logview.scrollTop = logview.scrollHeight;
+  }
+  if (cockpitMQ.addEventListener) cockpitMQ.addEventListener('change', applyCockpit);
+  else cockpitMQ.addListener(applyCockpit);   // 旧Safari
+  applyCockpit();
+
   var battleElsCache = {
     c3d: c3d, cradar: cradar, logview: logview,
     logFilter: function () { return logview.dataset.filter; },
