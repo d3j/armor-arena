@@ -535,3 +535,76 @@ table.rank-table tr.me { background: rgba(255,176,32,.08); }
 /* Ver6: 戦果ボックスのボタンを1行に収める(親パッチ) */
 .aftermath-box .aftermath-actions button,
 .aftermath-box button { font-size: 12px; padding: 9px 8px; white-space: nowrap; }
+
+/* =====================================================================
+   コックピットHUD(ワイド画面) — 3D全面の上に計器ガラスを重ねる
+   .cockpit クラスは ui.js の matchMedia(min-width:1100px) が付け外しする。
+   配置: 上段=TGT-A(左)・CONTROL(中)・TGT-B(右) / 下段=レーダーPiP(左)・実況フィード(右)。
+   下段中央は空けてアリーナの床が見えるようにする(3Dの迫力を遮らない)。
+   ===================================================================== */
+.screen.wide.cockpit {
+  max-width: none; padding: 0; gap: 0;
+  height: 100vh; height: 100dvh; min-height: 0; overflow: hidden;
+}
+.cockpit .battle-tabs { display: none; }   /* 全ビュー同時表示につきタブは不要 */
+.cockpit .battle-layout { position: relative; flex: 1; min-height: 0; }
+.cockpit .battle-stage { position: absolute; inset: 0; height: auto; border: none; }
+
+/* レーダーPiP(左下): 不透明な計器スクリーンとして置く */
+.cockpit .battle-stage .cradar {
+  inset: auto; left: 16px; bottom: calc(var(--safe-b) + 16px);
+  width: min(236px, 20vw); height: min(236px, 20vw);
+  border: 1px solid var(--border); z-index: 3;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .6), 0 8px 28px rgba(0, 0, 0, .55);
+}
+
+/* 実況フィード(右下): 半透明ガラス。上端は闇に溶けるフェード */
+.cockpit .log-wrap {
+  inset: auto; right: 16px; bottom: calc(var(--safe-b) + 16px);
+  width: min(400px, 30vw); max-height: 34vh;
+  background: transparent; z-index: 3;
+  border: 1px solid rgba(58, 74, 86, .55);
+}
+.cockpit .log-filter { background: rgba(8, 11, 15, .6); border-bottom-color: rgba(35, 46, 55, .55); }
+.cockpit .logview {
+  background: rgba(8, 11, 15, .55);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16%);
+}
+.cockpit .logview .line .txt { text-shadow: 0 1px 2px rgba(0, 0, 0, .85); }
+.cockpit .logview { scrollbar-width: thin; scrollbar-color: rgba(124, 138, 148, .35) transparent; }
+.cockpit .logview::-webkit-scrollbar { width: 6px; }
+.cockpit .logview::-webkit-scrollbar-thumb { background: rgba(124, 138, 148, .35); }
+.cockpit .logview::-webkit-scrollbar-track { background: transparent; }
+
+/* HUD列 → 全面オーバーレイ化(自身は透明・クリック透過、子だけ操作可) */
+.cockpit .hud { position: absolute; inset: 0; z-index: 4; flex: none; pointer-events: none; }
+.cockpit .tgt-row {
+  position: absolute; top: calc(var(--safe-t) + 12px); left: 16px; right: 16px;
+  display: flex; justify-content: space-between; pointer-events: none;
+}
+.cockpit .tgt-row .tgt-box { pointer-events: auto; flex: 0 1 300px; min-width: 230px; }
+
+/* 計器ガラス: 板金パネルのリベットを消し半透明に */
+.cockpit .tgt-box {
+  background-color: rgba(13, 18, 24, .62);
+  background-image: none;
+  border-color: rgba(58, 74, 86, .75);
+}
+
+/* CONTROL(上段中央): 横一列の細い操作ストリップ */
+.cockpit .control-box {
+  position: absolute; top: calc(var(--safe-t) + 12px); left: 50%; transform: translateX(-50%);
+  flex-direction: row; align-items: center; gap: 14px; padding: 8px 14px;
+  pointer-events: auto;
+}
+.cockpit .control-box .tgt-head { margin: 0; }
+.cockpit .control-box .hud-bottom { flex-wrap: nowrap; }
+
+/* 戦果(勝敗の余韻): 画面中央のガラスパネル */
+.cockpit .aftermath-box {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(440px, 42vw); pointer-events: auto;
+  background-color: rgba(13, 18, 24, .88);
+  box-shadow: 0 12px 44px rgba(0, 0, 0, .6);
+}

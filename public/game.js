@@ -862,16 +862,18 @@ function frame(now) {
     const legacy = els.hud['ammo' + key];
     if (legacy) legacy.textContent = arr.length ? `R:${amm(arr[0])} L:${amm(arr[1])}` : '';
   }
-  // 描画(アクティブタブのみ)
+  // 描画(通常=アクティブタブのみ。コックピットHUD時は3D+レーダーを毎フレーム両方描く)
   const mode = els.tabs.mode;
+  const cockpit = !!els.tabs.cockpit;
   // St2: 攻撃モーション窓 0.65→0.9s(反動の戻り・振り抜きのフォロースルーを含める)
   const atk = battle.lastAtk.map(la => la && (t - la.t) >= 0 && (t - la.t) < 0.9 ? { kind: la.kind, age01: (t - la.t) / 0.9, side: la.side } : null);
   const aliveWalls = battle.obsState.filter(o => o.kind === 'wall' && o.alive);
   const occluded = aliveWalls.length ? !!losBlockedBy(mst[0].x, mst[0].y, mst[1].x, mst[1].y, aliveWalls) : false;
   const theme = QTHEME || (battle.ctx.mode === 'arena' ? 'arena' : 'training');   // 闘技場=公式戦の配色
-  if (mode === 'radar') {
+  if (cockpit || mode === 'radar') {
     radar.render({ mechs: mst.map((m2, i) => ({ x: m2.x, y: m2.y, h: m2.h, hp: m2.hp, en: m2.en, color: battle.colors[i], alive: aliveArr[i] })), shots, blasts, obstacles: battle.obsState, sweep: tFx, theme }, tFx);
-  } else if (mode !== 'log') {
+  }
+  if (cockpit || (mode !== 'radar' && mode !== 'log')) {
     r3d.render({ mechs: mst.map((m2, i) => ({ mesh: battle.meshes[i], x: m2.x, y: m2.y, h: m2.h, hp: m2.hp, alive: aliveArr[i],
         deadAge: battle.diedAt[i] != null && tFx >= battle.diedAt[i] ? tFx - battle.diedAt[i] : undefined,
         flash01: Math.max(0, 1 - (tFx - battle.hitFlash[i]) / 0.14) * (battle.hitFlashMag[i] || 0),   // Ver6: 被弾フラッシュ
