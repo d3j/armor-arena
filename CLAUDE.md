@@ -6,7 +6,8 @@
 **開発の正本はこのリポ(2026-07-28 確定・人間指示)。** fable-playground 側の `/kouki/`・`/kouki-dev/` は
 本リポの公開 URL への転送ページで、以後 playground 側で kouki の改修は行わない。
 タスク追跡は `docs/tasks.md`、検証ハーネスは `tools/harness/`(check-freeze / gait-harness / harness /
-hazard-probe / make-dev / release-sim。使い方は各ファイル冒頭コメント)。
+harness-budget / hazard-probe / make-dev / release-sim / freecam-snippet。使い方は各ファイル冒頭コメント。
+freecam-snippet はブラウザのコンソールに貼る目視検証用=地形/遠景/装飾を手動カメラで覗く)。
 
 ## 構成と制約
 - `public/` が GitHub Pages の公開ルート(main push で `.github/workflows/pages.yml` が自動デプロイ)。
