@@ -311,12 +311,14 @@ export function createR3DThree(canvas) {
   scene3.add(decorGroup);
   let farSig = '', decorSig = '';
 
+  // facesToGroup が返すのは Group(実体は子のメッシュ)なので、直下だけ見ると孫の
+  // ジオメトリ/マテリアルが取り残される。戦場やテーマを行き来するたび GPU 資源が積み上がるため
+  // traverse で全部を解放する(既存の disposeGroup と同じ流儀)。
   function disposeChildren(group) {
     for (let i = group.children.length - 1; i >= 0; i--) {
       const c = group.children[i];
       group.remove(c);
-      if (c.geometry) c.geometry.dispose();
-      if (c.material) c.material.dispose();
+      c.traverse((n) => { if (n.geometry) n.geometry.dispose(); if (n.material) n.material.dispose(); });
     }
   }
   // 面リスト → 頂点色つきジオメトリ群。lit=地形質感つき MeshStandard(tex キー別に束ねる)、
@@ -521,10 +523,13 @@ export function createR3DThree(canvas) {
       const sig = (o.alive === false ? 'd' : 'a') + ':' + (o.hpFrac == null ? '1' : Math.round(o.hpFrac * 24)) + ':' + (field || '');
       let ent = obsCache.get(key);
       if (ent && ent.sig === sig) { ent.group.visible = true; return; }
+      // 近接カットの透過量は組み直しをまたいで引き継ぐ(カメラ前で消えている最中に被弾して
+      // 状態が変わると、新しいグループが不透明で1フレーム現れて壁が瞬く)。
+      const op = ent ? ent.op : undefined;
       if (ent) disposeGroup(ent.group);
       const group = buildObstacleGroup(o, field);
       dynGroup.add(group);
-      obsCache.set(key, { group, sig });
+      obsCache.set(key, { group, sig, op });
     });
     // 戦闘/戦場が替わって不在になった障害物は破棄(隠すだけだとGPU資源がセッション中積み上がる)
     obsCache.forEach((ent, key) => { if (!present.has(key)) { disposeGroup(ent.group); obsCache.delete(key); } });
@@ -857,6 +862,7 @@ export function createR3DThree(canvas) {
 
     const camInfo = updateCamera(scene, t, aspect);
     window.__r3dCam = camInfo;   // デバッグハンドル(__kb と同じ流儀): 実機検証でPOV区間の特定に使う
+    window.__r3dInfo = renderer.info;   // 同上: 戦場/テーマを往復させて GPU 資源が積み上がらないかを実測する
 
     // グリッド/地面を注視点へ追従(グリッド間隔にスナップ=線はワールド整列のまま窓だけ動く=無限地面)。
     // 機体が歩いて移動しても常に足元に地面があり、地面が流れて見える(歩行と地面の連動)。
