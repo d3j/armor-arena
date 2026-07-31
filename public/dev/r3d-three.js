@@ -15,10 +15,14 @@
 
 import * as THREE from './vendor/three.module.min.js';
 import {
-  computeMechPose, computeAutoCamera, containEye, scaleScene, themeOf,
+  computeMechPose, computeAutoCamera, containEye, scaleScene, themeOf, THEMES,
   poseMechFaces, shotWorldFaces, blastWorldFaces, obstacleWorldFaces,
+  fieldDecorFaces, distantSceneryFaces,
   MECH_SCALE, ARENA_CX, ARENA_CZ,
 } from './r3d.js';
+import {
+  partMatClass, partMatSet, groundMaps, rockMaps, concreteMaps, buildingMaps, envEquirect,
+} from './tex.js';
 
 const DEG = Math.PI / 180;
 const FOV_Y_DEG = 55;               // r3d.js の FOV_Y と一致
@@ -51,119 +55,11 @@ function axisVec(a) {
 
 function hexToColor(hex) { return new THREE.Color(hex); }
 
-// ==== プロシージャルテクスチャ(St3): 外部アセットなし・シード固定=毎回同じ見た目 ====
-// 機体=金属パネル(白ベースにパネルライン/リベット/摩耗 → material.color の乗算で機体色が残る)、
-// 地面=テーマ別の土/舗装、岩=節理ノイズ。UV は「面法線のドミナント軸への平面投影」で貼る
-// (箱・柱・多面体の寄せ集めに一様なテクセル密度を与える最短の方法。継ぎ目はパネル柄なら目立たない)。
-function texRng(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-function makeCanvasTex(size, draw) {
-  const cv = document.createElement('canvas');
-  cv.width = size; cv.height = size;
-  draw(cv.getContext('2d'), size);
-  const tx = new THREE.CanvasTexture(cv);
-  tx.colorSpace = THREE.SRGBColorSpace;
-  tx.wrapS = THREE.RepeatWrapping; tx.wrapT = THREE.RepeatWrapping;
-  return tx;
-}
-function makeMetalTexture() {
-  return makeCanvasTex(256, (c, S) => {
-    const rnd = texRng(0x51E9A3);
-    c.fillStyle = '#d9dbdd'; c.fillRect(0, 0, S, S);
-    // 下地のムラ(圧延ムラ)
-    for (let i = 0; i < 260; i++) {
-      const v = 208 + Math.floor(rnd() * 26);
-      c.fillStyle = `rgba(${v},${v + 1},${v + 2},0.5)`;
-      c.fillRect(rnd() * S, rnd() * S, 2 + rnd() * 14, 2 + rnd() * 10);
-    }
-    // パネルライン(格子をジッタ分割。wrap 継ぎ目対策で 0 と S の両端にも線)
-    c.strokeStyle = 'rgba(84,92,98,0.85)'; c.lineWidth = 1.5;
-    const cells = 4;
-    for (let i = 0; i <= cells; i++) {
-      const base = (i / cells) * S, j1 = i === 0 || i === cells ? 0 : (rnd() - 0.5) * 18;
-      c.beginPath(); c.moveTo(base + j1, 0); c.lineTo(base + j1, S); c.stroke();
-      const j2 = i === 0 || i === cells ? 0 : (rnd() - 0.5) * 18;
-      c.beginPath(); c.moveTo(0, base + j2); c.lineTo(S, base + j2); c.stroke();
-    }
-    // 補助ライン(細く薄い区画割り)
-    c.strokeStyle = 'rgba(110,118,124,0.5)'; c.lineWidth = 1;
-    for (let i = 0; i < 7; i++) {
-      const x = rnd() * S, y = rnd() * S, len = 20 + rnd() * 60;
-      c.beginPath();
-      if (rnd() < 0.5) { c.moveTo(x, y); c.lineTo(x + len, y); } else { c.moveTo(x, y); c.lineTo(x, y + len); }
-      c.stroke();
-    }
-    // リベット(パネル交点付近の鋲)と摩耗(明るい擦れ)
-    for (let i = 0; i < 34; i++) {
-      const x = rnd() * S, y = rnd() * S;
-      c.fillStyle = 'rgba(70,76,82,0.9)';
-      c.beginPath(); c.arc(x, y, 1.6, 0, Math.PI * 2); c.fill();
-      c.fillStyle = 'rgba(238,240,242,0.5)';
-      c.beginPath(); c.arc(x - 0.7, y - 0.7, 0.7, 0, Math.PI * 2); c.fill();
-    }
-    for (let i = 0; i < 26; i++) {
-      c.strokeStyle = `rgba(232,235,238,${0.12 + rnd() * 0.2})`;
-      c.lineWidth = 0.8 + rnd() * 1.4;
-      const x = rnd() * S, y = rnd() * S, a = rnd() * Math.PI, l = 6 + rnd() * 26;
-      c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); c.stroke();
-    }
-  });
-}
-function makeGroundTexture(theme, seed) {
-  return makeCanvasTex(512, (c, S) => {
-    const rnd = texRng(seed);
-    c.fillStyle = theme.ground[1]; c.fillRect(0, 0, S, S);
-    // 土/舗装のまだら(テーマ配色内で明暗)
-    for (const [col2, n, a] of [[theme.ground[0], 340, 0.5], [theme.ground[2], 240, 0.4]]) {
-      c.fillStyle = col2; c.globalAlpha = a;
-      for (let i = 0; i < n; i++) {
-        const x = rnd() * S, y = rnd() * S, r = 2 + rnd() * 16;
-        c.beginPath(); c.ellipse(x, y, r, r * (0.4 + rnd() * 0.6), rnd() * Math.PI, 0, Math.PI * 2); c.fill();
-      }
-    }
-    c.globalAlpha = 1;
-    // ひび/轍(暗い折れ線)
-    c.strokeStyle = 'rgba(0,0,0,0.28)';
-    for (let i = 0; i < 26; i++) {
-      c.lineWidth = 0.8 + rnd() * 1.6;
-      let x = rnd() * S, y = rnd() * S;
-      c.beginPath(); c.moveTo(x, y);
-      for (let k2 = 0; k2 < 5; k2++) { x += (rnd() - 0.5) * 60; y += (rnd() - 0.5) * 60; c.lineTo(x, y); }
-      c.stroke();
-    }
-    // 明るい砂の散り
-    c.fillStyle = 'rgba(255,255,255,0.06)';
-    for (let i = 0; i < 400; i++) c.fillRect(rnd() * S, rnd() * S, 1.5, 1.5);
-  });
-}
-function makeRockTexture() {
-  return makeCanvasTex(256, (c, S) => {
-    const rnd = texRng(0xA7C0DE);
-    c.fillStyle = '#cfcac2'; c.fillRect(0, 0, S, S);
-    for (let i = 0; i < 400; i++) {
-      const v = 168 + Math.floor(rnd() * 60);
-      c.fillStyle = `rgba(${v},${v - 4},${v - 10},0.5)`;
-      const x = rnd() * S, y = rnd() * S, r = 2 + rnd() * 12;
-      c.beginPath(); c.ellipse(x, y, r, r * (0.5 + rnd() * 0.5), rnd() * Math.PI, 0, Math.PI * 2); c.fill();
-    }
-    // 節理(岩の割れ目)
-    c.strokeStyle = 'rgba(58,54,48,0.55)';
-    for (let i = 0; i < 30; i++) {
-      c.lineWidth = 0.8 + rnd() * 1.8;
-      let x = rnd() * S, y = rnd() * S;
-      c.beginPath(); c.moveTo(x, y);
-      for (let k2 = 0; k2 < 4; k2++) { x += (rnd() - 0.5) * 70; y += (rnd() - 0.5) * 70; c.lineTo(x, y); }
-      c.stroke();
-    }
-  });
-}
+// ==== プロシージャル質感(St4): 生成そのものは tex.js。ここは Three への貼り付け係 ====
+// 外部アセットなし・シード固定=毎回同じ見た目。3枚組(albedo / normal / roughness+metalness)を
+// パーツの質感クラス別に持ち、機体色は material.color の乗算で残す(白ベースの掟)。
+// UV は「面法線のドミナント軸への平面投影」(箱・柱・多面体の寄せ集めに一様なテクセル密度を
+// 与える最短の方法。継ぎ目はパネル柄なら目立たない)。
 // 位置配列(非indexed三角形)から「面法線ドミナント軸の平面投影 UV」を作る。scale=1ワールド単位あたりのタイル数。
 function planarUVs(pos, scale) {
   const uv = new Float32Array((pos.length / 3) * 2);
@@ -188,13 +84,23 @@ function planarUVs(pos, scale) {
   return uv;
 }
 
-let _metalTex = null;
-function metalTexture() { return _metalTex || (_metalTex = makeMetalTexture()); }
-let _rockTex = null;
-function rockTexture() { return _rockTex || (_rockTex = makeRockTexture()); }
+// 障害物/装飾の面が使う質感キー → テクセル密度(1ワールド単位あたりのタイル数)。
+// 岩は大きな節理、ビルは窓割りが階に見える密度、舗装は骨材が細かく見える密度。
+// concrete は縁石/支柱など小物用に密度を上げる(粗い節理を拡大させない)。
+const TERRAIN_UV = { rock: 0.1, building: 0.055, asphalt: 0.05, concrete: 0.55 };
+// tex キー(+ビルの窓パターン variant)→ tex.js の3枚組。生成は初回のみ。
+function terrainSet(tex, variant) {
+  if (tex === 'building') return buildingMaps((variant || 0) & 3);
+  if (tex === 'asphalt') return _asphaltSet || (_asphaltSet = groundMaps(ASPHALT_THEME, 'asphalt'));
+  if (tex === 'concrete') return concreteMaps();
+  return rockMaps();
+}
+// 舗装はテーマ配色に引っ張られない(街路のアスファルトは夜でも昼でも灰黒)。
+const ASPHALT_THEME = { ground: ['#3a3d40', '#2e3134', '#1c1e20'] };
+let _asphaltSet = null;
 
 // ---- パーツ形状 → BufferGeometry(非indexed=面ごとに独立頂点でフラットシェーディング) ----
-function partGeometry(part) {
+function partGeometry(part, uvScale) {
   const V = part.verts;               // pivot 相対のローカル頂点
   const pos = [];
   for (const face of part.faces) {
@@ -206,9 +112,12 @@ function partGeometry(part) {
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  // 機体スケール(全高 ~8 ワールド単位)に合わせ 1 タイル ≈ 1.4 単位 → 胴で 2〜3 パネル
-  g.setAttribute('uv', new THREE.BufferAttribute(planarUVs(pos, 0.7), 2));
+  // 機体スケール(全高 ~8 ワールド単位)基準。タイル密度は質感クラスごと(ゴムのラグは細かく、
+  // 増加装甲の厚板は粗く)=同じ機体の中で「材質が違う」ことが目で分かる。
+  g.setAttribute('uv', new THREE.BufferAttribute(planarUVs(pos, uvScale), 2));
   g.computeVertexNormals();           // 非indexed=各三角形が自分の面法線を持つ=フラット
+  // 接線属性は作らない(computeTangents は index 必須で、非indexed だと console.error を出す)。
+  // TANGENT が無い場合 Three は画面空間微分から接空間を近似する=法線マップはそのまま効く。
   return g;
 }
 
@@ -216,16 +125,24 @@ function partMaterial(part) {
   const col = hexToColor(part.color);
   if (part.emissive) {
     // 発光パーツ(コクピット/バイザー/ビーム/アンダーグロー等): 常時明るく、影は落とさない。
+    // 強度は 0.9→0.6。トーンマッピング導入で 0.9 だと色が飛んで全部白い箱になり、
+    // 「バイザーは青緑・コクピットは橙」の見分け(記号)が消えていた(実機確認 2026-07-31)。
     return new THREE.MeshStandardMaterial({
-      color: col, emissive: col, emissiveIntensity: 0.9,
+      color: col, emissive: col, emissiveIntensity: 0.6,
       roughness: 0.4, metalness: 0.0, flatShading: true, side: THREE.DoubleSide,
     });
   }
-  // 金属度は控えめ(env map 無しの金属は暗く潰れる)。拡散反射を残して2灯でも立体が読めるように。
-  // map は白ベースの金属パネル柄 → color 乗算で機体色のまま質感だけ乗る。
+  // 質感クラス別の3枚組。環境マップ(scene.environment)があるので metalness を実用域まで上げられる
+  // (St3 が 0.12 に抑えていたのは env map 不在で金属面が黒く潰れたから)。
+  const cls = partMatClass(part);
+  const s = partMatSet(cls);
   return new THREE.MeshStandardMaterial({
-    color: col, map: metalTexture(),
-    roughness: 0.68, metalness: 0.12, flatShading: true, side: THREE.DoubleSide,
+    color: col, map: s.map, normalMap: s.normalMap,
+    roughnessMap: s.ormMap, metalnessMap: s.ormMap,
+    normalScale: new THREE.Vector2(1, 1),
+    roughness: 1, metalness: 1,          // マップ側の値がそのまま効くように基準は 1(乗算されるため)
+    envMapIntensity: 0.85,
+    flatShading: true, side: THREE.DoubleSide,
   });
 }
 
@@ -237,7 +154,7 @@ function buildMechTree(mesh) {
   const baseColor = new Array(mesh.parts.length);
   mesh.parts.forEach((part, i) => {
     const g = new THREE.Group();
-    const geo = partGeometry(part);
+    const geo = partGeometry(part, part.emissive ? 0.7 : partMatSet(partMatClass(part)).uv);
     const mat = partMaterial(part);
     const m = new THREE.Mesh(geo, mat);
     if (!part.emissive) { m.castShadow = true; m.receiveShadow = true; }
@@ -312,7 +229,13 @@ export function createR3DThree(canvas) {
   // ちょうど canvas 実寸に合わせる。
   renderer.setPixelRatio(1);
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // three r185 で PCFSoftShadowMap は非推奨(内部で PCFShadowMap に落ちるうえ毎生成で警告が出る)。
+  // 実際に使われる型を明示して console を静かに保つ(見た目は変わらない)。
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  // St4: フィルミックなトーンマッピング。金属のハイライトが白飛びせず肩で丸まる=「安いCG」感が抜ける。
+  // 演出フェイス(弾/爆風/HUD)は toneMapped=false で素の彩度を守る。
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.18;
 
   const scene3 = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(FOV_Y_DEG, 1, 0.5, 6000);
@@ -356,15 +279,19 @@ export function createR3DThree(canvas) {
   scene3.add(sky);
 
   // --- 地面(接地シャドウの受け手・テーマ別プロシージャル土テクスチャ) + グリッド ---
-  const GROUND_SIZE = 8000, GROUND_REPEAT = 100;          // 1タイル = 80 ワールド単位
+  // タイル間隔を 80→60 に詰め、代わりにテクスチャ側へ低周波のムラを焼いた(タイル感を割る)。
+  const GROUND_SIZE = 8000, GROUND_REPEAT = 134;          // 1タイル ≈ 60 ワールド単位
   const GROUND_TILE = GROUND_SIZE / GROUND_REPEAT;
-  const groundMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.98, metalness: 0.0 });
+  const groundMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 1, metalness: 1,
+    normalScale: new THREE.Vector2(0.6, 0.6), envMapIntensity: 0.35,
+  });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.set(ARENA_CX, 0, ARENA_CZ);
   ground.receiveShadow = true;
   scene3.add(ground);
-  const groundTexCache = new Map();   // theme -> CanvasTexture(テーマは2種のみ・使い回し)
+  const groundTexCache = new Map();   // (theme,kind) -> 3枚組(テーマ2種×地質2種=最大4組)
 
   const grid = new THREE.GridHelper(1200, 24, 0x5a7a86, 0x3a5560);
   grid.position.set(ARENA_CX, 0.03, ARENA_CZ);
@@ -373,6 +300,103 @@ export function createR3DThree(canvas) {
 
   // 距離フォグ(遠景を地平色に溶かす=ソフト版の距離フェード相当)。色は theme 更新時に設定。
   scene3.fog = new THREE.Fog(0x22303a, 220, 900);
+
+  // --- 遠景(地平のシルエット)+ 戦場の装飾(街の家具)。戦場/テーマが替わった時だけ組み直す ---
+  // 遠景は unlit かつ fog:false(フォグ域の外に置くので、フォグを効かせると単色に潰れる)。
+  // 装飾は lit + fog あり + 地形テクスチャ=足元の情報量として戦場に馴染ませる。
+  const farGroup = new THREE.Group();
+  farGroup.renderOrder = -1;           // 空の直後・すべての手前のものより先に描く
+  scene3.add(farGroup);
+  const decorGroup = new THREE.Group();
+  scene3.add(decorGroup);
+  let farSig = '', decorSig = '';
+
+  function disposeChildren(group) {
+    for (let i = group.children.length - 1; i >= 0; i--) {
+      const c = group.children[i];
+      group.remove(c);
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) c.material.dispose();
+    }
+  }
+  // 面リスト → 頂点色つきジオメトリ群。lit=地形質感つき MeshStandard(tex キー別に束ねる)、
+  // unlit=MeshBasic、isLine=LineSegments。obstacle/decor/遠景で共通に使う。
+  // Three の頂点色は「作業色空間(リニア)」として扱われる=16進をそのまま入れると sRGB 値を
+  // リニアとして解釈され、約2倍明るく出る。既存の障害物/演出の配色はその前提で調整済みなので
+  // 触らない。St4 で新規に起こした遠景・街の装飾だけは linearize:true で正しく変換し、
+  // 空(ShaderMaterial 側は Color.set で正しく変換される)と同じ土台で色を決められるようにする。
+  const srgbToLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  function facesToGroup(faces, { lit = true, fog = true, shadow = false, unlitAll = false, linearize = false } = {}) {
+    const group = new THREE.Group();
+    const buckets = new Map();   // key -> {P,C,tex,variant}
+    const emiP = [], emiC = [], linP = [], linC = [];
+    for (const it of faces) {
+      let [cr, cg, cb, ca] = parseColA(it.color);
+      if (linearize) { cr = srgbToLinear(cr); cg = srgbToLinear(cg); cb = srgbToLinear(cb); }
+      const a = ca * (it.alpha == null ? 1 : it.alpha);
+      if (it.isLine) {
+        linP.push(...it.verts[0], ...it.verts[1]); linC.push(cr, cg, cb, a, cr, cg, cb, a);
+        continue;
+      }
+      const v = it.verts;
+      const toUnlit = unlitAll || it.emissive || !lit;
+      const key = toUnlit ? null : (it.tex || 'rock') + ':' + (it.texVar || 0);
+      let P, C;
+      if (toUnlit) { P = emiP; C = emiC; } else {
+        let b = buckets.get(key);
+        if (!b) { b = { P: [], C: [], tex: it.tex || 'rock', variant: it.texVar || 0 }; buckets.set(key, b); }
+        P = b.P; C = b.C;
+      }
+      for (let k = 1; k < v.length - 1; k++) {
+        P.push(...v[0], ...v[k], ...v[k + 1]);
+        C.push(cr, cg, cb, a, cr, cg, cb, a, cr, cg, cb, a);
+      }
+    }
+    const mkGeo = (P, C) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(C, 4));
+      return g;
+    };
+    buckets.forEach((b) => {
+      if (!b.P.length) return;
+      const g = mkGeo(b.P, b.C); g.computeVertexNormals();
+      g.setAttribute('uv', new THREE.BufferAttribute(planarUVs(b.P, TERRAIN_UV[b.tex] || 0.1), 2));
+      const s = terrainSet(b.tex, b.variant);
+      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+        vertexColors: true, map: s.map, normalMap: s.normalMap,
+        roughnessMap: s.ormMap, metalnessMap: s.ormMap,
+        emissiveMap: s.emissiveMap || null,
+        emissive: s.emissiveMap ? 0xffffff : 0x000000,
+        emissiveIntensity: s.emissiveMap ? windowLevel() : 0,
+        roughness: 1, metalness: 1, envMapIntensity: 0.5,
+        flatShading: true, transparent: true, side: THREE.DoubleSide, fog,
+      }));
+      if (shadow) { m.castShadow = true; }
+      m.receiveShadow = !!shadow;
+      group.add(m);
+    });
+    if (emiP.length) {
+      group.add(new THREE.Mesh(mkGeo(emiP, emiC), new THREE.MeshBasicMaterial({
+        vertexColors: true, transparent: true, side: THREE.DoubleSide, fog, toneMapped: false,
+      })));
+    }
+    if (linP.length) {
+      group.add(new THREE.LineSegments(mkGeo(linP, linC), new THREE.LineBasicMaterial({
+        vertexColors: true, transparent: true, fog, toneMapped: false,
+      })));
+    }
+    return group;
+  }
+  // ビルの窓の点灯は「夜(闘技場テーマ)は強く / 昼(演習テーマ)は消え気味」。
+  // 生成時にこの値を焼き、テーマが替わったら既存グループを走査して付け替える(材質の参照を溜めない)。
+  function windowLevel() { return curTheme === THEMES.arena ? 0.7 : 0.16; }
+  function refreshWindowLevel() {
+    const lv = windowLevel();
+    for (const g of [decorGroup, dynGroup]) {
+      g.traverse((c) => { if (c.material && c.material.emissiveMap) c.material.emissiveIntensity = lv; });
+    }
+  }
 
   // --- 機体木 + 演出レイヤ(弾/爆風/砂煙/くすぶり煙/マズルフラッシュ等) ---
   const mechTrees = new Map();   // mesh(オブジェクト参照) -> tree
@@ -422,10 +446,10 @@ export function createR3DThree(canvas) {
     };
   }
   const fxTri = makeDynLayer((geo) => new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
   })));
   const fxLine = makeDynLayer((geo) => new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
-    vertexColors: true, transparent: true, depthWrite: false,
+    vertexColors: true, transparent: true, depthWrite: false, toneMapped: false,
   })));
 
   function feedFaces(faces) {
@@ -461,89 +485,113 @@ export function createR3DThree(canvas) {
     dg.computeVertexNormals();
     const warm = new THREE.Group();
     dg.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(6), 2));
-    // 障害物の lit 材質と同じ define 構成(USE_MAP+vertexColors)で温める
-    warm.add(new THREE.Mesh(dg, new THREE.MeshStandardMaterial({ vertexColors: true, map: rockTexture(), flatShading: true, roughness: 0.95, metalness: 0.0, transparent: true, side: THREE.DoubleSide })));
-    warm.add(new THREE.Mesh(dg.clone(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide })));
-    warm.add(new THREE.LineSegments(dg.clone(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true })));
+    // 障害物の lit 材質と同じ define 構成(USE_MAP+USE_NORMALMAP+USE_ROUGHNESSMAP+USE_METALNESSMAP+
+    // vertexColors)で温める。St4 で法線/ORM マップが増えた=define 構成が変わったのでここも合わせる。
+    const rs = rockMaps();
+    warm.add(new THREE.Mesh(dg, new THREE.MeshStandardMaterial({ vertexColors: true, map: rs.map, normalMap: rs.normalMap, roughnessMap: rs.ormMap, metalnessMap: rs.ormMap, flatShading: true, roughness: 1, metalness: 1, transparent: true, side: THREE.DoubleSide })));
+    warm.add(new THREE.Mesh(dg.clone(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, toneMapped: false })));
+    warm.add(new THREE.LineSegments(dg.clone(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, toneMapped: false })));
+    // 遠景のフォグ無し unlit(fog:false は別プログラム)
+    warm.add(new THREE.Mesh(dg.clone(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, fog: false, toneMapped: false })));
     // スプライトは実使用(マーカー/照準リング/計器枠)と同じ define 構成(map+alphaTest+sizeAttenuation:false)で
     // 温める。素の SpriteMaterial では別プログラムになりプリウォームが効かない(USE_MAP/ALPHATEST が変わる)。
     const wc = document.createElement('canvas'); wc.width = 2; wc.height = 2;
     const wt = new THREE.CanvasTexture(wc); wt.colorSpace = THREE.SRGBColorSpace;
-    const ws = new THREE.Sprite(new THREE.SpriteMaterial({ map: wt, alphaTest: 0.02, sizeAttenuation: false, depthTest: false, transparent: true, opacity: 0 }));
+    const ws = new THREE.Sprite(new THREE.SpriteMaterial({ map: wt, alphaTest: 0.02, sizeAttenuation: false, depthTest: false, transparent: true, opacity: 0, toneMapped: false }));
     ws.position.set(0, -999, 0); ws.scale.setScalar(1e-4);
     warm.add(ws);
     warm.children.forEach((c) => { c.frustumCulled = false; });
     scene3.add(warm);
   }
-  function buildObstacleGroup(o) {
+  function buildObstacleGroup(o, field) {
     const faces = [];
-    obstacleWorldFaces({ obstacles: [o] }, faces);
-    const group = new THREE.Group();
-    const litP = [], litC = [], emiP = [], emiC = [], linP = [], linC = [];
-    for (const it of faces) {
-      const [cr, cg, cb, ca] = parseColA(it.color);
-      const a = ca * (it.alpha == null ? 1 : it.alpha);
-      if (it.isLine) {
-        linP.push(...it.verts[0], ...it.verts[1]); linC.push(cr, cg, cb, a, cr, cg, cb, a);
-        continue;
-      }
-      // 泥沼は unlit(ソフト版と同じ暗い水面色。照明が乗ると明るい土色に化ける)。発光面も unlit。
-      const unlit = it.emissive || o.kind === 'mud';
-      const v = it.verts, P = unlit ? emiP : litP, C = unlit ? emiC : litC;
-      for (let k = 1; k < v.length - 1; k++) {
-        P.push(...v[0], ...v[k], ...v[k + 1]);
-        C.push(cr, cg, cb, a, cr, cg, cb, a, cr, cg, cb, a);
-      }
-    }
-    const mkGeo = (P, C) => {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
-      g.setAttribute('color', new THREE.Float32BufferAttribute(C, 4));
-      return g;
-    };
-    if (litP.length) {
-      const g = mkGeo(litP, litC); g.computeVertexNormals();
-      // 岩肌テクスチャ(白ベース×頂点色の乗算=岩柱は岩色・茨は暗色のまま質感だけ乗る)
-      g.setAttribute('uv', new THREE.BufferAttribute(planarUVs(litP, 0.1), 2));
-      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
-        vertexColors: true, map: rockTexture(), flatShading: true, roughness: 0.95, metalness: 0.0,
-        transparent: true, side: THREE.DoubleSide,
-      }));
-      if (o.kind !== 'mud') { m.castShadow = true; }
-      m.receiveShadow = true;
-      group.add(m);
-    }
-    if (emiP.length) {
-      group.add(new THREE.Mesh(mkGeo(emiP, emiC), new THREE.MeshBasicMaterial({
-        vertexColors: true, transparent: true, side: THREE.DoubleSide,
-      })));
-    }
-    if (linP.length) {
-      group.add(new THREE.LineSegments(mkGeo(linP, linC), new THREE.LineBasicMaterial({
-        vertexColors: true, transparent: true,
-      })));
-    }
-    return group;
+    obstacleWorldFaces({ obstacles: [o], field }, faces);
+    // 泥沼は unlit(ソフト版と同じ暗い水面色。照明が乗ると明るい土色に化ける)。発光面も unlit。
+    return facesToGroup(faces, { unlitAll: o.kind === 'mud', shadow: o.kind !== 'mud', fog: true });
   }
   function disposeGroup(group) {
     dynGroup.remove(group);
     group.traverse((c) => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
   }
-  function updateObstacles(obstacles) {
+  function updateObstacles(obstacles, field) {
     const present = new Set();
     (obstacles || []).forEach((o) => {
       const key = o.kind + ':' + o.x.toFixed(1) + ':' + o.y.toFixed(1) + ':' + (o.r || 0);   // r も同一性に含める
       present.add(key);
-      const sig = (o.alive === false ? 'd' : 'a') + ':' + (o.hpFrac == null ? '1' : Math.round(o.hpFrac * 24));
+      const sig = (o.alive === false ? 'd' : 'a') + ':' + (o.hpFrac == null ? '1' : Math.round(o.hpFrac * 24)) + ':' + (field || '');
       let ent = obsCache.get(key);
       if (ent && ent.sig === sig) { ent.group.visible = true; return; }
       if (ent) disposeGroup(ent.group);
-      const group = buildObstacleGroup(o);
+      const group = buildObstacleGroup(o, field);
       dynGroup.add(group);
       obsCache.set(key, { group, sig });
     });
     // 戦闘/戦場が替わって不在になった障害物は破棄(隠すだけだとGPU資源がセッション中積み上がる)
     obsCache.forEach((ent, key) => { if (!present.has(key)) { disposeGroup(ent.group); obsCache.delete(key); } });
+  }
+
+  // --- 近接カット: カメラと狙点の間に入った遮蔽物を透かして消す ---
+  // 市街の高層ビルは何もしないと画面が壁一枚で埋まる(岩柱でも稀に起きる)。カメラ側 3/4 の区間で
+  // 視線を横切り、かつカメラがその天端より低い遮蔽物だけを対象にし、0.1s で滑らかに抜き差しする
+  // (即時オンオフはカットのようにチラつく)。判定は描画のみ=シム/射線には一切触れない。
+  function updateObstacleCull(obstacles, eye, target, dt, field) {
+    if (!eye || !target) return;
+    const dx = target[0] - eye[0], dz = target[2] - eye[2];
+    const len2 = dx * dx + dz * dz || 1;
+    const k = 1 - Math.exp(-Math.max(0.001, dt) / 0.1);
+    (obstacles || []).forEach((o) => {
+      if (o.kind !== 'wall' || o.alive === false) return;
+      const key = o.kind + ':' + o.x.toFixed(1) + ':' + o.y.toFixed(1) + ':' + (o.r || 0);
+      const ent = obsCache.get(key);
+      if (!ent) return;
+      // 天端の見積り(obstacleWorldFaces の高さ式に合わせた保守値)。カメラがこれより上なら跨いで見える。
+      const topY = field === 'shigai' ? o.r * 2.4 : 12;
+      let block = false;
+      if (eye[1] < topY) {
+        let t = ((o.x - eye[0]) * dx + (o.y - eye[2]) * dz) / len2;
+        if (t < 0.78) {                                  // 狙点側の遮蔽は残す(奥行きの手掛かり)
+          t = t < 0 ? 0 : t;
+          const px = eye[0] + dx * t, pz = eye[2] + dz * t;
+          block = Math.hypot(o.x - px, o.y - pz) < o.r * 1.05;
+        }
+      }
+      const want = block ? 0 : 1;
+      const cur = ent.op == null ? 1 : ent.op;
+      const op = cur + (want - cur) * k;
+      ent.op = Math.abs(op - want) < 0.01 ? want : op;
+      if (ent.opApplied === ent.op) return;
+      ent.opApplied = ent.op;
+      ent.group.traverse((c) => {
+        if (!c.material) return;
+        if (c.userData._cs === undefined) c.userData._cs = !!c.castShadow;   // 元の影設定を覚えて戻せるように
+        c.material.opacity = ent.op;
+        c.visible = ent.op > 0.02;
+        c.castShadow = c.userData._cs && ent.op > 0.5;
+      });
+    });
+  }
+
+  // --- 遠景+装飾の組み直し(戦場id/テーマが変わった時だけ) ---
+  function updateSceneryAndDecor(field, theme) {
+    const fsig = (field || '') + '|' + (theme === THEMES.arena ? 'a' : 't');
+    if (fsig !== farSig) {
+      farSig = fsig;
+      disposeChildren(farGroup);
+      const faces = [];
+      distantSceneryFaces(theme, field, faces);
+      // 遠景はフォグ域の外=フォグを切って色を手で決める。影も不要(遠すぎて意味がない)。
+      const g = facesToGroup(faces, { lit: false, fog: false, shadow: false, linearize: true });
+      g.traverse((c) => { c.frustumCulled = false; });
+      farGroup.add(g);
+    }
+    if ((field || '') !== decorSig) {
+      decorSig = field || '';
+      disposeChildren(decorGroup);
+      const faces = [];
+      fieldDecorFaces(field, faces);
+      if (faces.length) decorGroup.add(facesToGroup(faces, { lit: true, fog: true, shadow: true, linearize: true }));
+      refreshWindowLevel();
+    }
   }
 
   // --- 敵機マーカーHUD: 距離+方向の▽をスプライト(スクリーン等倍)で敵機頭上に出す。
@@ -553,7 +601,7 @@ export function createR3DThree(canvas) {
   const mkTex = new THREE.CanvasTexture(mkCanvas);
   mkTex.colorSpace = THREE.SRGBColorSpace;
   const marker = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: mkTex, sizeAttenuation: false, depthTest: false, transparent: true, alphaTest: 0.02,
+    map: mkTex, sizeAttenuation: false, depthTest: false, transparent: true, alphaTest: 0.02, toneMapped: false,
   }));
   marker.scale.set(0.22, 0.11, 1);
   marker.renderOrder = 20;
@@ -600,7 +648,7 @@ export function createR3DThree(canvas) {
   const rtTex = new THREE.CanvasTexture(rtCanvas);
   rtTex.colorSpace = THREE.SRGBColorSpace;
   const reticle = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: rtTex, sizeAttenuation: false, depthTest: false, transparent: true, alphaTest: 0.02,
+    map: rtTex, sizeAttenuation: false, depthTest: false, transparent: true, alphaTest: 0.02, toneMapped: false,
   }));
   reticle.scale.set(0.3, 0.3, 1);
   reticle.renderOrder = 21;
@@ -656,7 +704,7 @@ export function createR3DThree(canvas) {
     cpTex.needsUpdate = true;
   }
   const cockpit = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: cpTex, sizeAttenuation: false, depthTest: false, transparent: true, alphaTest: 0.02,
+    map: cpTex, sizeAttenuation: false, depthTest: false, transparent: true, alphaTest: 0.02, toneMapped: false,
   }));
   cockpit.position.set(0, 0, -1);
   cockpit.renderOrder = 22;   // 照準リングより手前(縁は目に一番近い)
@@ -686,24 +734,61 @@ export function createR3DThree(canvas) {
     projIdx: -1, projSig: null, amLock: null, lineSide: null, povIdx: -1, povOk: false,
   };
   let curTheme = null;
+  let lastCullT = null;      // 近接カットのフェード用に前フレームの時刻を持つ(シークで負dtなら次フレームで復帰)
+
+  // 環境マップ: テーマの空+太陽+地面を equirect に描き PMREM でぼかす。金属面の映り込みの元。
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envCache = new Map();
+  function applyEnv(theme) {
+    let env = envCache.get(theme);
+    if (!env) {
+      const eq = envEquirect(theme);
+      env = pmrem.fromEquirectangular(eq).texture;
+      eq.dispose();
+      envCache.set(theme, env);
+    }
+    scene3.environment = env;
+  }
+
+  // 地面: テーマ×地質(土/舗装)の3枚組。市街戦だけ舗装にする。
+  let groundSig = null;
+  function applyGround(theme, kind) {
+    const key = (theme === THEMES.arena ? 'a:' : 't:') + kind;
+    if (groundSig === key) return;
+    groundSig = key;
+    let set = groundTexCache.get(key);
+    if (!set) {
+      set = groundMaps(kind === 'asphalt' ? ASPHALT_THEME : theme, kind);
+      const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+      for (const t of [set.map, set.normalMap, set.ormMap]) {
+        t.repeat.set(GROUND_REPEAT, GROUND_REPEAT);
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.anisotropy = aniso;
+      }
+      groundTexCache.set(key, set);
+    }
+    groundMat.map = set.map;
+    groundMat.normalMap = set.normalMap;
+    groundMat.roughnessMap = set.ormMap;
+    groundMat.metalnessMap = set.ormMap;
+    groundMat.needsUpdate = true;
+  }
 
   function applyTheme(theme) {
     if (theme === curTheme) return;
     curTheme = theme;
     skyUni.c0.value.set(theme.sky[0]); skyUni.c1.value.set(theme.sky[1]);
     skyUni.c2.value.set(theme.sky[2]); skyUni.c3.value.set(theme.sky[3]);
-    // 地面はテーマ配色を焼き込んだテクスチャ(material.color は白のまま)
-    let gt = groundTexCache.get(theme);
-    if (!gt) {
-      gt = makeGroundTexture(theme, 0xB0A7E5);
-      gt.repeat.set(GROUND_REPEAT, GROUND_REPEAT);
-      gt.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
-      groundTexCache.set(theme, gt);
-    }
-    groundMat.map = gt;
-    groundMat.needsUpdate = true;
     scene3.fog.color.set(theme.ground[0]);
     hemi.color.set(theme.sky[2]); hemi.groundColor.set(theme.ground[2]);
+    // 夜(闘技場)は太陽を弱め、環境光と街の灯りに寄せる=同じシーンでも時間帯が変わって見える
+    const night = theme === THEMES.arena;
+    sun.intensity = night ? 0.95 : 1.9;
+    sun.color.set(night ? 0xffd0a8 : 0xfff2e0);
+    hemi.intensity = night ? 0.7 : 1.15;
+    fill.intensity = night ? 0.22 : 0.35;
+    applyEnv(theme);
+    refreshWindowLevel();
   }
 
   // camera director + 平滑化(r3d.js createR3D 内 computeCamera と同じロジック)
@@ -757,7 +842,18 @@ export function createR3DThree(canvas) {
     const scene = scaleScene(rawScene);      // シム座標→3D描画座標へ相似縮小(ソフト版と同一)
     const aspect = W / H;
     if (camera.aspect !== aspect) { camera.aspect = aspect; camera.updateProjectionMatrix(); }
-    applyTheme(themeOf(scene));
+    const theme = themeOf(scene);
+    applyTheme(theme);
+    // St4: 戦場別の地質(市街=舗装)・遠景(山稜 or スカイライン)・街の装飾。
+    const field = scene.field || null;
+    applyGround(theme, field === 'shigai' ? 'asphalt' : 'dirt');
+    // 遠方のフォグ色: 通常は地面色(土に溶ける)。市街は都市のスモッグ寄りの中性色にする
+    // (土の暗緑がアスファルトの灰黒とぶつかって、地平に緑の帯が出るため)。
+    scene3.fog.color.set(field === 'shigai'
+      ? (theme === THEMES.arena ? 0x2a1d1c : 0x2b3238)
+      : theme.ground[0]);
+    updateSceneryAndDecor(field, theme);
+    grid.visible = field !== 'shigai';   // 市街は道路と区画線が方向の手掛かり=デバッググリッドは邪魔
 
     const camInfo = updateCamera(scene, t, aspect);
     window.__r3dCam = camInfo;   // デバッグハンドル(__kb と同じ流儀): 実機検証でPOV区間の特定に使う
@@ -810,7 +906,9 @@ export function createR3DThree(canvas) {
     blastWorldFaces(scene, fx, t);
     feedFaces(fx);
 
-    updateObstacles(scene.obstacles);
+    updateObstacles(scene.obstacles, field);
+    updateObstacleCull(scene.obstacles, camSt.eye, camInfo.target, t - (lastCullT == null ? t - 0.016 : lastCullT), field);
+    lastCullT = t;
     updateMarker(scene, camInfo.showMarkers);
     updateCockpitHUD(scene, camInfo.pov, aspect);
 

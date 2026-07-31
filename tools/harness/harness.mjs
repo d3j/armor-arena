@@ -16,7 +16,7 @@ const A = {
   lancer:   { frame:'fr8', legs:'lg13', gen:'gn7', armor:'ar2', wpnR:'wp17', wpnL:'wp15', ai:'ai3', color:'#8fd0ff', decal:'none', name:'' },
   bombard:  { frame:'fr5', legs:'lg14', gen:'gn3', armor:'ar7', wpnR:'wp18', wpnL:'wp16', ai:'ai5', color:'#c2a35c', decal:'none', name:'' },
 };
-const FIELD_IDS = ['plain','sekichu','deitan','crater','haikyo','ibara'];
+const FIELD_IDS = ['plain','sekichu','deitan','crater','haikyo','ibara','shigai'];
 
 let fail = 0;
 const ok = (name, cond, extra='') => { console.log((cond?'  ✓ ':'  ✗ ')+name+(extra?`  ${extra}`:'')); if(!cond) fail++; };

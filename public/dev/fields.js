@@ -71,6 +71,29 @@ export const FIELDS = [
     ],
   },
   {
+    // ジレンマ設計: 十字に走る大通りが最短かつ最速だが遮蔽が無く、長距離武器の射線を丸ごと通す。
+    // 街区の中(路地)へ入れば必ず遮蔽が得られるが遠回り。大通りの唯一の盾は交差点広場の不壊塔だけ。
+    // 大通りの南北の端に崩落瓦礫(鉄筋=踏めば痛い)、東西の端に冠水(足を取る)を置き、
+    // 「大通りを端まで走り切る」逃げ道にも代償を付ける。外周の高層2棟は不壊=永遠の遮蔽。
+    id: 'shigai', name: '崩落市街', desc: '大通りは速い。だが遮蔽はない。路地は遠い。だが生きて着く。',
+    shape: { kind: 'rect', w: 1000, h: 1000 },
+    obstacles: [
+      { kind: 'wall', x: 400, y: 400, r: 44, hp: 380 },
+      { kind: 'wall', x: 600, y: 400, r: 44, hp: 380 },
+      { kind: 'wall', x: 400, y: 600, r: 44, hp: 380 },
+      { kind: 'wall', x: 600, y: 600, r: 44, hp: 380 },
+      { kind: 'wall', x: 250, y: 250, r: 56, hp: null },
+      { kind: 'wall', x: 750, y: 750, r: 56, hp: null },
+      { kind: 'wall', x: 750, y: 250, r: 50, hp: 460 },
+      { kind: 'wall', x: 250, y: 750, r: 50, hp: 460 },
+      { kind: 'wall', x: 500, y: 500, r: 24, hp: null },
+      { kind: 'spike', x: 500, y: 180, r: 70, hp: null },
+      { kind: 'spike', x: 500, y: 820, r: 70, hp: null },
+      { kind: 'mud', x: 180, y: 500, r: 74, hp: null },
+      { kind: 'mud', x: 820, y: 500, r: 74, hp: null },
+    ],
+  },
+  {
     id: 'haikyo', name: '廃棄工廠', desc: 'コンテナと瓦礫と油泥。すべてが使える、すべてが壊れる。',
     shape: { kind: 'rect', w: 1000, h: 1000 },
     obstacles: [

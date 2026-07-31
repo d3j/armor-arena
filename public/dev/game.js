@@ -77,6 +77,7 @@ const DEV = true;           // kouki-dev(開発版)生成時に make-dev.mjs が
                             // 開発版=シム調整の試験場: 通信(ログイン/闘技場)とリプレイ発行/再生を無効化
 const REPLAY_ISSUE = true;  // 例外運用: 本番でシムを直接調整する間だけ false(発行のみ停止。再生は全版生きる)
 const QTHEME = Q.get('theme');   // 'arena' で闘技場配色を強制(撮影・検証用)
+const QFIELD = Q.get('field');   // 戦場idを強制(撮影デモ/検証用。?auto=1&field=shigai 等)
 window.__promoDbg = { events: [], meta: { slug: 'kouki' } };
 const dbg = (type, extra) => __promoDbg.events.push(Object.assign({ t: performance.now() / 1000, type }, extra));
 
@@ -887,6 +888,7 @@ function frame(now) {
         // ② 撃破機のくすぶり煙は r3d 側で横倒しした胴の実位置に出す(位置ズレ解消)
         smolder: !!battle.loserDestroyed && !aliveArr[i] })),
       shots, blasts, obstacles: battle.obsState, camera: 'auto', theme,
+      field: battle.res.fieldId,   // St4: 戦場id(描画のみ。地形の見え・遠景・街の装飾を戦場別に切替える)
       camCut: (tFx - battle.camCut.t0) < battle.camCut.dur   // Ver6: クライマックス強制カット(有効窓のみ)
         ? { x: battle.camCut.x, y: battle.camCut.y, age: tFx - battle.camCut.t0, dur: battle.camCut.dur } : null,
       aftermath: battle.done && battle.summary
@@ -1103,7 +1105,7 @@ function stopBattle() {
     // 撮影デモ: ランクB2(強襲・見せ場が多い) vs 現機体、シード固定
     const f = CAMPAIGN[3].fights[1];
     const demoBuild = { frame:'fr2', legs:'lg1', gen:'gn2', armor:'ar2', wpnR:'wp1', wpnL:'wp2', ai:'ai2', color:'#4d7ea8', decal:'none', name:'シラサギ' };
-    startBattle(demoBuild, f.build, QSEED != null ? QSEED : 20260705, { mode: 'campaign', rank: 3, idx: 1, reward: f.reward, enemyName: f.name, fieldId: 'sekichu' });
+    startBattle(demoBuild, f.build, QSEED != null ? QSEED : 20260705, { mode: 'campaign', rank: 3, idx: 1, reward: f.reward, enemyName: f.name, fieldId: QFIELD || 'sekichu' });
     if (AUTO && !STILL) {
       // タブ自動切替(3D→レーダー→実況→3D)
       const sched = [[9, 'radar'], [16, 'log'], [21, '3d']];

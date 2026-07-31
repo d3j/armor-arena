@@ -244,6 +244,9 @@ function makePart(name, pivot, shape, color, opts = {}) {
     spin: opts.spin || null, // {axis:'x'|'y'|'z', speed} 連続回転(車輪・ドリル)
     deadAxis: opts.deadAxis || null, deadAngle: opts.deadAngle || 0,
     emissive: !!opts.emissive,
+    // St4: 質感クラスの明示指定(tex.js partMatClass。未指定ならパーツ名の前方一致で決まる)。
+    // 名前だけでは決まらないパーツ(装甲id で見た目が変わる肩など)にだけ付ける。
+    mat: opts.mat || null,
     role: opts.role || null, // 攻撃演出/組立の目印: 'arm'|'fist'|'gunBarrel'|'muzzle'|'railGlow'|'blade'|'hilt'|'pod'|'drill'|'drillcasing'|'rocketFist'
     side: opts.side || 0,    // 1=右 / -1=左 / 0=非該当
     // 移動方向連携(②): 'hip'=股/大腿(前後スイング+横ステップの主動)/'knee'=膝(接地伸展・遊脚屈曲) を指定した
@@ -880,10 +883,13 @@ export function mechMesh(build, PARTS, color) {
       }
     }
     // 肩アーマー(装甲id別: 鋳鉄/重層=角張った大型 / 繊維/流体=丸パッド / 他=標準)
+    // 質感も装甲idへ合わせる(名前が共通なので mat を明示: 鋳鉄=鋳肌 / 重層=厚板 / 繊維=織り / 流体=艶)
     if (armorId === 'ar6' || armorId === 'ar3') {
-      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.02, 0], trapBoxY(sx, shoulderY - 0.02, 0, 0.2, 0.3, 0.32, 0.2, 0.24), mixColor(col, '#000000', 0.24), { parent: armName }));
+      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.02, 0], trapBoxY(sx, shoulderY - 0.02, 0, 0.2, 0.3, 0.32, 0.2, 0.24), mixColor(col, '#000000', 0.24), { parent: armName, mat: armorId === 'ar6' ? 'cast' : 'plate' }));
     } else if (armorId === 'ar5' || armorId === 'ar7') {
-      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.02, 0], octaShape(sx, shoulderY - 0.02, 0, 0.26), armorId === 'ar7' ? mixColor(col, '#bfe8ff', 0.2) : mixColor(col, '#ffffff', 0.12), { parent: armName }));
+      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.02, 0], octaShape(sx, shoulderY - 0.02, 0, 0.26), armorId === 'ar7' ? mixColor(col, '#bfe8ff', 0.2) : mixColor(col, '#ffffff', 0.12), { parent: armName, mat: armorId === 'ar7' ? 'fluid' : 'weave' }));
+    } else if (armorId === 'ar4') {
+      parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.05, 0], boxShape(sx, shoulderY - 0.05, 0, 0.26, 0.16, 0.28), mixColor(col, '#000000', 0.18), { parent: armName, mat: 'era' }));
     } else {
       parts.push(makePart(`pauldron${side}`, [sx, shoulderY - 0.05, 0], boxShape(sx, shoulderY - 0.05, 0, 0.26, 0.16, 0.28), mixColor(col, '#000000', 0.18), { parent: armName }));
     }
@@ -1877,8 +1883,13 @@ function hitGeneric(b, bi, age, out) {
 }
 
 // 障害物(scene.obstacles): wall=岩柱(alive/hpFracで劣化・瓦礫化)/ mud=暗色円盤 / spike=錐クラスタ
+// St4: scene.field(戦場id)で「同じ当たり判定・違う見た目」に分岐する。市街戦(shigai)は
+//   wall=ビル / spike=崩落瓦礫と鉄筋 / mud=冠水した街路。シム側の意味(遮蔽/減速/DoT)は不変。
+// 面には tex('rock'|'building'|'asphalt')を付け、レンダラ側が質感テクスチャを選ぶ(未指定=rock)。
 export function obstacleWorldFaces(scene, out) {
+  const urban = !!(scene && scene.field === 'shigai');
   (scene.obstacles || []).forEach((o) => {
+    if (urban) { urbanObstacleFaces(o, out); return; }
     if (o.kind === 'wall') {
       const alive = o.alive !== false;
       const hpFrac = o.hpFrac == null ? 1 : o.hpFrac;
@@ -1968,6 +1979,409 @@ export function obstacleWorldFaces(scene, out) {
         const tip = prismShape([cx, hgt - 0.16, cz], AXIS_Y, 0.16, 0, br * 0.5, 6);
         tip.faces.forEach((f) => out.push({ verts: f.map((vi) => tip.verts[vi]), color: '#ff5a2a', alpha: 1, emissive: true }));
       }
+    }
+  });
+}
+
+// ==================== 市街戦(shigai)の障害物 ====================
+// 当たり判定は共通(円 r)。見た目だけを都市の語彙に置き換える。
+//   wall  … 鉄筋コンクリのビル(不壊 hp===null=高層タワー / 破壊可=中層。損傷で焦げと亀裂、
+//            撃破で瓦礫の山+折れた壁の残骸)。矩形は判定円に内接させる(見た目が判定より外へ出ない)。
+//   spike … 崩落した高架の瓦礫+突き出た鉄筋(踏めば痛い=茨と同じ意味の都市版)。
+//   mud   … 冠水した街路(油膜の浮いた濁水)。
+function urbanObstacleFaces(o, out) {
+  const seed = o.x * 0.31 + o.y * 0.17;
+  if (o.kind === 'wall') {
+    const alive = o.alive !== false;
+    const hpFrac = o.hpFrac == null ? 1 : o.hpFrac;
+    const tower = o.hp0 === null || o.hp === null;      // 不壊=街のランドマーク(高層)
+    const hw = o.r * 0.74, hd = o.r * 0.74 * (0.82 + hash(seed * 2.3) * 0.36);
+    const bvar = Math.floor(hash(seed * 5.7) * 4);      // 窓の点灯パターン(4種)
+    const wallCol = mixColor('#a8a49c', '#5a564e', hash(seed * 1.3) * 0.5);
+    if (!alive) {
+      // 全壊: 瓦礫の山(低く不定形)+折れた壁の残骸2枚
+      const mound = prismShape([o.x, o.r * 0.16, o.y], AXIS_Y, o.r * 0.16, o.r * 0.5, o.r * 1.04, 7,
+        { jitter: (i) => (hash(seed + i * 3.3) - 0.5) * o.r * 0.42 });
+      mound.faces.forEach((f) => out.push({ verts: f.map((vi) => mound.verts[vi]), color: '#4a4640', alpha: 1, tex: 'rock' }));
+      for (let s = 0; s < 2; s++) {
+        const a = hash(seed * 7.1 + s * 4.7) * Math.PI * 2;
+        const sh = o.r * (0.5 + hash(seed + s) * 0.5);
+        const px = o.x + Math.cos(a) * o.r * 0.5, pz = o.y + Math.sin(a) * o.r * 0.5;
+        const stub = trapBoxY(px, sh / 2, pz, sh / 2, o.r * 0.3, o.r * 0.12, o.r * 0.18, o.r * 0.08);
+        stub.faces.forEach((f) => out.push({ verts: f.map((vi) => stub.verts[vi]), color: '#6e6a62', alpha: 1, tex: 'building', texVar: bvar }));
+        // 露出した鉄筋
+        for (let k = 0; k < 3; k++) {
+          const rx = px + (hash(seed + s * 3 + k) - 0.5) * o.r * 0.4;
+          const rz = pz + (hash(seed + s * 5 + k) - 0.5) * o.r * 0.4;
+          out.push({ isLine: true, verts: [[rx, sh * 0.95, rz], [rx + (hash(k + s) - 0.5) * 2, sh * 1.25, rz + (hash(k * 2 + s) - 0.5) * 2]], color: 'rgba(140,88,52,0.9)' });
+        }
+      }
+      return;
+    }
+    const hUnits = o.r * (tower ? 3.7 + hash(seed * 1.7) * 0.9 : 2.5 + hash(seed * 1.7) * 1.1);
+    const dmg = (1 - hpFrac);
+    const col = mixColor(wallCol, '#2a2622', dmg * 0.45);
+    // 本体(下段)
+    const h0 = tower ? hUnits * 0.62 : hUnits;
+    const body = boxShape(o.x, h0 / 2, o.y, hw, h0 / 2, hd);
+    body.faces.forEach((f) => out.push({ verts: f.map((vi) => body.verts[vi]), color: col, alpha: 1, tex: 'building', texVar: bvar }));
+    // 高層はセットバックした上段(都市のシルエットに段差を作る)
+    let topY = h0;
+    if (tower) {
+      const h1 = hUnits - h0;
+      const up = boxShape(o.x, h0 + h1 / 2, o.y, hw * 0.68, h1 / 2, hd * 0.68);
+      up.faces.forEach((f) => out.push({ verts: f.map((vi) => up.verts[vi]), color: col, alpha: 1, tex: 'building', texVar: (bvar + 1) & 3 }));
+      // 下段の屋上パラペット
+      const par = boxShape(o.x, h0 + 0.5, o.y, hw * 1.04, 0.5, hd * 1.04);
+      par.faces.forEach((f) => out.push({ verts: f.map((vi) => par.verts[vi]), color: mixColor(col, '#000000', 0.2), alpha: 1, tex: 'concrete' }));
+      topY = hUnits;
+    }
+    // 最上部のパラペット(縁取り=ビルらしさの決め手)
+    const par2 = boxShape(o.x, topY + 0.6, o.y, hw * 1.06, 0.6, hd * 1.06);
+    par2.faces.forEach((f) => out.push({ verts: f.map((vi) => par2.verts[vi]), color: mixColor(col, '#000000', 0.22), alpha: 1, tex: 'concrete' }));
+    // 屋上設備(空調ユニット/貯水槽)
+    for (let k = 0; k < 2; k++) {
+      const ux = o.x + (hash(seed * 9.1 + k) - 0.5) * hw, uz = o.y + (hash(seed * 11.3 + k) - 0.5) * hd;
+      const uh = o.r * (0.1 + hash(seed + k * 7) * 0.12);
+      const eq = boxShape(ux, topY + 1.2 + uh, uz, o.r * 0.16, uh, o.r * 0.14);
+      eq.faces.forEach((f) => out.push({ verts: f.map((vi) => eq.verts[vi]), color: '#7c7a74', alpha: 1, tex: 'concrete' }));
+    }
+    // 1階の店舗(暗いガラス面+庇)= 足元の情報量
+    const shopH = Math.min(o.r * 0.34, 5.5);
+    [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dx, dz]) => {
+      const gx = o.x + dx * (hw + 0.12), gz = o.y + dz * (hd + 0.12);
+      const g = boxShape(gx, shopH / 2, gz, dx ? 0.12 : hw * 0.8, shopH / 2, dz ? 0.12 : hd * 0.8);
+      g.faces.forEach((f) => out.push({ verts: f.map((vi) => g.verts[vi]), color: '#20262c', alpha: 1, tex: 'concrete' }));
+      const aw = boxShape(gx + dx * 0.5, shopH + 0.3, gz + dz * 0.5, dx ? 0.6 : hw * 0.84, 0.22, dz ? 0.6 : hd * 0.84);
+      aw.faces.forEach((f) => out.push({ verts: f.map((vi) => aw.verts[vi]), color: mixColor(col, '#000000', 0.3), alpha: 1, tex: 'concrete' }));
+    });
+    // 高層の航空障害灯(点滅は tSec 非依存の常灯=決定論)+マスト
+    if (tower) {
+      out.push({ isLine: true, verts: [[o.x, topY + 1.2, o.y], [o.x, topY + 1.2 + o.r * 0.5, o.y]], color: 'rgba(60,58,54,0.9)' });
+      const bl = octaShape(o.x, topY + 1.2 + o.r * 0.5, o.y, 0.5);
+      bl.faces.forEach((f) => out.push({ verts: f.map((vi) => bl.verts[vi]), color: '#ff4433', alpha: 1, emissive: true }));
+    }
+    // 損傷: 亀裂(暗線)と焦げ
+    if (hpFrac < 0.999) {
+      for (let c = 0; c < 4; c++) {
+        const a = hash(seed * 5.1 + c * 9.3) * Math.PI * 2;
+        const sx2 = Math.cos(a) >= 0 ? hw : -hw, sz2 = Math.sin(a) >= 0 ? hd : -hd;
+        const useX = Math.abs(Math.cos(a)) > Math.abs(Math.sin(a));
+        const px = useX ? o.x + sx2 * 1.01 : o.x + (hash(a) - 0.5) * hw * 1.6;
+        const pz = useX ? o.y + (hash(a * 3) - 0.5) * hd * 1.6 : o.y + sz2 * 1.01;
+        out.push({ isLine: true, verts: [[px, h0 * (0.2 + c * 0.18), pz], [px + (hash(c) - 0.5) * 4, h0 * (0.4 + c * 0.18), pz + (hash(c * 2) - 0.5) * 4]], color: 'rgba(12,10,8,0.75)' });
+      }
+    }
+  } else if (o.kind === 'mud') {
+    // 冠水した街路: 濁った水面+油膜+水没した縁石
+    if (o.alive === false) return;
+    const sides = 14;
+    const verts = [];
+    for (let i = 0; i < sides; i++) {
+      const a = (i / sides) * Math.PI * 2;
+      const j = 0.82 + hash(seed + i * 4.1) * 0.28;
+      verts.push([o.x + Math.cos(a) * o.r * j, 0.18, o.y + Math.sin(a) * o.r * j]);
+    }
+    const cen = [o.x, 0.18, o.y];
+    // 舗装(暗い灰黒)の上に暗い水を置くと、明度が近すぎて水面が見えない(実機確認 2026-07-31)。
+    // 街の冠水は「空を映す明るい青灰」にして、舗装との差で水だと分かるようにする。
+    for (let i = 0; i < sides; i++) {
+      out.push({ verts: [cen, verts[i], verts[(i + 1) % sides]], color: '#2a3a42', alpha: 0.9, noCull: true });
+    }
+    for (let ring = 1; ring <= 3; ring++) {
+      const rr = o.r * (0.3 + ring * 0.22), rv = [];
+      for (let i = 0; i < sides; i++) {
+        const a = (i / sides) * Math.PI * 2;
+        rv.push([o.x + Math.cos(a) * rr, 0.21, o.y + Math.sin(a) * rr]);
+      }
+      const rc = ring === 1 ? 'rgba(178,142,214,0.5)' : ring === 2 ? 'rgba(132,178,208,0.42)' : 'rgba(108,134,158,0.34)';
+      for (let i = 0; i < sides; i++) out.push({ isLine: true, verts: [rv[i], rv[(i + 1) % sides]], color: rc });
+    }
+    // 水際の白い縁(ここから水、が一目で分かる)
+    for (let i = 0; i < sides; i++) {
+      out.push({ isLine: true, verts: [add(verts[i], [0, 0.02, 0]), add(verts[(i + 1) % sides], [0, 0.02, 0])], color: 'rgba(200,224,236,0.72)' });
+    }
+  } else if (o.kind === 'spike') {
+    // 崩落した高架の瓦礫: コンクリ塊+突き出た鉄筋(先端は錆色の発光=危険の記号)
+    if (o.alive === false) return;
+    const rs = 16, rv = [];
+    for (let i = 0; i < rs; i++) {
+      const a = (i / rs) * Math.PI * 2;
+      rv.push([o.x + Math.cos(a) * o.r, 0.19, o.y + Math.sin(a) * o.r]);
+    }
+    for (let i = 0; i < rs; i++) out.push({ isLine: true, verts: [rv[i], rv[(i + 1) % rs]], color: 'rgba(210,120,50,0.5)' });
+    // 塊の数は判定円の広さに見合う密度に(疎だと「ここは踏むと痛い帯」に見えない)
+    const n = 11 + Math.floor(hash(seed) * 6);
+    for (let i = 0; i < n; i++) {
+      const hn = hash(seed + i * 11.3);
+      const ang = hn * Math.PI * 2, rad = Math.sqrt(hash(hn * 3.3 + i)) * o.r * 0.86;
+      const cx = o.x + Math.cos(ang) * rad, cz = o.y + Math.sin(ang) * rad;
+      // コンクリ塊(傾いた板)
+      const bh = 0.9 + hash(hn * 7.7) * 2.4, bw = 1.0 + hash(hn * 2.1) * 1.8;
+      const slab = trapBoxY(cx, bh / 2, cz, bh / 2, bw, bw * 0.55, bw * 0.7, bw * 0.4);
+      slab.faces.forEach((f) => out.push({ verts: f.map((vi) => slab.verts[vi]), color: '#6b675f', alpha: 1, tex: 'concrete' }));
+      // 突き出た鉄筋(2〜3本)
+      const rn = 2 + Math.floor(hash(hn * 4.3) * 2);
+      for (let k = 0; k < rn; k++) {
+        const jx = (hash(hn * 5 + k) - 0.5) * bw, jz = (hash(hn * 6 + k) - 0.5) * bw;
+        const tipY = bh + 0.9 + hash(hn * 8 + k) * 1.6;
+        out.push({ isLine: true, verts: [[cx + jx, bh * 0.7, cz + jz], [cx + jx * 1.5, tipY, cz + jz * 1.5]], color: 'rgba(158,96,54,0.95)' });
+        const tip = octaShape(cx + jx * 1.5, tipY, cz + jz * 1.5, 0.16);
+        tip.faces.forEach((f) => out.push({ verts: f.map((vi) => tip.verts[vi]), color: '#ff6a2a', alpha: 1, emissive: true }));
+      }
+    }
+  }
+}
+
+// ==================== 戦場の装飾(render-only・当たり判定ゼロ) ====================
+// シムは一切知らない「街の家具」。市街戦の道路・縁石・区画線・街灯・信号・電線・廃車を
+// 実座標(シムのメートル)で組み、ここで WORLD_SCALE の縮小をかける(高さは描画単位のまま)。
+// 戦場id ごとに1回だけ生成してレンダラ側がキャッシュする(静的=毎フレーム再生成しない)。
+export function fieldDecorFaces(fieldId, out) {
+  if (fieldId !== 'shigai') return;
+  const S = WORLD_SCALE;
+  // (シムm, 描画単位の高さ, シムm) → ワールド座標
+  const P = (x, y, z) => [ARENA_CX + (x - ARENA_CX) * S, y, ARENA_CZ + (z - ARENA_CZ) * S];
+  const quad = (x0, z0, x1, z1, y, color, alpha, tex) => out.push({
+    verts: [P(x0, y, z0), P(x1, y, z0), P(x1, y, z1), P(x0, y, z1)], color, alpha: alpha == null ? 1 : alpha, noCull: true, tex,
+  });
+  // 大きな地面パッチは必ず分割する: 1枚の巨大面はカメラが上に乗ると手前頂点が背後へ回り、
+  // 近クリップで面ごと消える(泥沼の扇分割と同じ理由)。~24m 角のタイルに割る。
+  const quadTiled = (x0, z0, x1, z1, y, color, tex) => {
+    const step = 24;
+    for (let x = x0; x < x1; x += step) {
+      const xe = Math.min(x1, x + step);
+      for (let z = z0; z < z1; z += step) quad(x, z, xe, Math.min(z1, z + step), y, color, 1, tex);
+    }
+  };
+  // 箱(シムmの幅奥行き × 描画単位の高さ)
+  const box = (x, z, hwM, hdM, y0, y1, color, tex) => {
+    const c = P(x, 0, z), hw = hwM * S, hd = hdM * S;
+    const sh = boxShape(c[0], (y0 + y1) / 2, c[2], hw, (y1 - y0) / 2, hd);
+    sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color, alpha: 1, tex }));
+  };
+  // 発光する小箱(灯体。世界座標のオフセットで置く)
+  const glow = (x, z, y, hw, hh, hd, color, ox, oz) => {
+    const c = P(x, 0, z);
+    const sh = boxShape(c[0] + (ox || 0), y, c[2] + (oz || 0), hw, hh, hd);
+    sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color, alpha: 1, emissive: true }));
+  };
+  const line = (x0, y0, z0, x1, y1, z1, color) => out.push({ isLine: true, verts: [P(x0, y0, z0), P(x1, y1, z1)], color });
+
+  const AV = 500, HALF = 62;             // 大通りの中心線と半幅(m)
+  // --- 舗装(大通り2本。地面より僅かに上=Zファイト回避) ---
+  quadTiled(AV - HALF, 40, AV + HALF, 960, 0.05, '#2b2e31', 'asphalt');
+  quadTiled(40, AV - HALF, 960, AV + HALF, 0.07, '#2b2e31', 'asphalt');
+  // --- 縁石(歩道の立ち上がり。長い箱は分割して近クリップ落ちを避ける)---
+  // 色は暗いコンクリ。岩肌テクスチャは明色ベースなので、明るい頂点色だと白い擁壁のように
+  // 前景を占領してしまう(実機確認 2026-07-31)。
+  for (const s of [-1, 1]) {
+    for (let z = 60; z < 940; z += 80) box(AV + s * (HALF + 3), z + 40, 3, 40, 0.0, 1.1, '#6d6a64', 'concrete');
+    for (let x = 60; x < 940; x += 80) box(x + 40, AV + s * (HALF + 3), 40, 3, 0.0, 1.1, '#6d6a64', 'concrete');
+  }
+  // --- 区画線(白の破線・交差点は空ける)---
+  for (let z = 60; z < 940; z += 44) {
+    if (Math.abs(z - AV) < HALF + 14) continue;
+    quad(AV - 1.6, z, AV + 1.6, z + 22, 0.12, 'rgba(224,222,206,0.75)', 1, 'concrete');
+  }
+  for (let x = 60; x < 940; x += 44) {
+    if (Math.abs(x - AV) < HALF + 14) continue;
+    quad(x, AV - 1.6, x + 22, AV + 1.6, 0.13, 'rgba(224,222,206,0.7)', 1, 'concrete');
+  }
+  // --- 横断歩道(交差点の四辺)---
+  for (const s of [-1, 1]) {
+    for (let i = -5; i <= 5; i++) {
+      const off = i * 10;
+      quad(AV + off - 3.2, AV + s * (HALF + 8), AV + off + 3.2, AV + s * (HALF + 26), 0.14, 'rgba(226,224,210,0.62)', 1, 'concrete');
+      quad(AV + s * (HALF + 8), AV + off - 3.2, AV + s * (HALF + 26), AV + off + 3.2, 0.15, 'rgba(226,224,210,0.6)', 1, 'concrete');
+    }
+  }
+  // --- 街灯(大通りに沿って交互。灯体は発光=夜テーマで街が生きて見える)---
+  const lampAt = (x, z, ax, az) => {
+    box(x, z, 1.2, 1.2, 0, 15, '#4c4f52', 'concrete');                   // 支柱
+    box(x + ax * 5, z + az * 5, ax ? 6 : 1.0, az ? 6 : 1.0, 14.0, 14.7, '#4c4f52', 'concrete');   // アーム
+    // 灯体は小さく抑える(大きい発光板は白飛びして「板が浮いている」ようにしか見えない)
+    box(x + ax * 10, z + az * 10, 2.6, 2.6, 13.7, 14.5, '#3a3d40', 'concrete');              // 笠
+    glow(x + ax * 10, z + az * 10, 13.55, 0.85, 0.22, 0.85, '#ffd79a');
+  };
+  for (let z = 120; z < 900; z += 130) {
+    lampAt(AV - HALF - 9, z, 1, 0);
+    lampAt(AV + HALF + 9, z + 65, -1, 0);
+  }
+  for (let x = 120; x < 900; x += 130) {
+    if (Math.abs(x - AV) < HALF + 30) continue;
+    lampAt(x, AV - HALF - 9, 0, 1);
+    lampAt(x + 65, AV + HALF + 9, 0, -1);
+  }
+  // --- 交差点の信号機(4隅。赤/黄/緑の3灯。赤だけ強く点く=止まった街)---
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const px = AV + sx * (HALF + 10), pz = AV + sz * (HALF + 10);
+    box(px, pz, 1.2, 1.2, 0, 16, '#42454a', 'concrete');
+    box(px - sx * 4, pz, 5, 1.0, 14.6, 15.4, '#42454a', 'concrete');
+    box(px - sx * 8, pz, 2.6, 1.4, 11.8, 14.6, '#2c2f33', 'concrete');
+    ['#ff4a34', '#ffca4a', '#4affa0'].forEach((c, i) => {
+      glow(px - sx * 8, pz, 13.8 - i * 1.0, 0.42, 0.42, 0.2, c, 0, sz * 0.7);
+    });
+  }
+  // --- 電柱と電線(垂れたケーブル=空の情報量。裏通りの雰囲気)---
+  for (let i = 0; i < 7; i++) {
+    const px = 120 + i * 120, pz = AV + HALF + 34;
+    box(px, pz, 1.5, 1.5, 0, 21, '#5a5148', 'concrete');
+    box(px, pz, 9, 1.1, 18.2, 19.0, '#5a5148', 'concrete');
+    if (i > 0) {
+      const qx = px - 120;
+      for (const dz of [-6, 0, 6]) {
+        // 垂れ(たわみ)を3分割で近似
+        line(qx, 18.0, pz + dz, qx + 40, 15.6, pz + dz, 'rgba(24,22,20,0.85)');
+        line(qx + 40, 15.6, pz + dz, qx + 80, 15.6, pz + dz, 'rgba(24,22,20,0.85)');
+        line(qx + 80, 15.6, pz + dz, px, 18.0, pz + dz, 'rgba(24,22,20,0.85)');
+      }
+    }
+  }
+  // --- 焼けた廃車(大通り脇に散らす。シムは知らない=当たり判定なし)---
+  const WRECKS = [[AV - HALF + 16, 230, 0.5], [AV + HALF - 20, 640, 1.9], [270, AV - HALF + 14, 1.1],
+                  [730, AV + HALF - 16, 2.6], [AV + 26, 880, 0.3], [AV - 34, 130, 2.2]];
+  WRECKS.forEach(([x, z, rot], i) => {
+    const c = P(x, 0, z);
+    const L = 11 * S, W = 5 * S;
+    const ca = Math.cos(rot), sa = Math.sin(rot);
+    // 車体+キャビン(回転を頂点に直接かける)
+    const rotY = (v) => [c[0] + (v[0] - c[0]) * ca - (v[2] - c[2]) * sa, v[1], c[2] + (v[0] - c[0]) * sa + (v[2] - c[2]) * ca];
+    const body = boxShape(c[0], 1.5, c[2], L, 1.5, W);
+    body.faces.forEach((f) => out.push({ verts: f.map((vi) => rotY(body.verts[vi])), color: '#3a352f', alpha: 1, tex: 'concrete' }));
+    const cab = boxShape(c[0] - L * 0.2, 3.6, c[2], L * 0.45, 1.2, W * 0.86);
+    cab.faces.forEach((f) => out.push({ verts: f.map((vi) => rotY(cab.verts[vi])), color: '#221f1c', alpha: 1, tex: 'concrete' }));
+    // 焼け跡(下の黒い染み)
+    out.push({
+      verts: [rotY([c[0] - L * 1.4, 0.09, c[2] - W * 1.6]), rotY([c[0] + L * 1.4, 0.09, c[2] - W * 1.6]),
+              rotY([c[0] + L * 1.4, 0.09, c[2] + W * 1.6]), rotY([c[0] - L * 1.4, 0.09, c[2] + W * 1.6])],
+      color: 'rgba(12,10,9,0.55)', alpha: 1, noCull: true, tex: 'asphalt',
+    });
+    if (i % 2 === 0) {   // 半分は横倒し=戦場の乱れ
+      const t = boxShape(c[0], 0.7, c[2] + W * 2.2, L * 0.8, 0.7, W * 0.5);
+      t.faces.forEach((f) => out.push({ verts: f.map((vi) => rotY(t.verts[vi])), color: '#332f2a', alpha: 1, tex: 'concrete' }));
+    }
+  });
+  // --- 場外の街(戦域の外へ街を続ける。距離フォグに溶けて「街の中の戦場」に見える)---
+  // 実座標で 0..1000 が戦域。その外側のリングに街区を置く=遊べないが必ず見える帯。
+  quadTiled(AV - HALF, -260, AV + HALF, 40, 0.05, '#2b2e31', 'asphalt');
+  quadTiled(AV - HALF, 960, AV + HALF, 1260, 0.05, '#2b2e31', 'asphalt');
+  quadTiled(-260, AV - HALF, 40, AV + HALF, 0.07, '#2b2e31', 'asphalt');
+  quadTiled(960, AV - HALF, 1260, AV + HALF, 0.07, '#2b2e31', 'asphalt');
+  for (let i = 0; i < 46; i++) {
+    const h1 = hash(i * 2.7 + 11.5), h2 = hash(i * 6.1 + 3.3), h3 = hash(i * 4.9 + 7.1);
+    const ang = (i / 46) * Math.PI * 2 + (h1 - 0.5) * 0.09;
+    const rad = 620 + h2 * 900;                                  // 実座標での中心距離(戦域外)
+    const x = 500 + Math.cos(ang) * rad, z = 500 + Math.sin(ang) * rad;
+    if (Math.abs(x - AV) < HALF + 26 && Math.abs(z - AV) < HALF + 26) continue;   // 大通りの延長は塞がない
+    const w = 52 + h3 * 74, d = 52 + hash(i * 9.3) * 74;
+    const hgt = (16 + h3 * 46) * (0.8 + rad / 1200);             // 遠いほど高い=奥行き
+    const bv = Math.floor(hash(i * 13.7) * 4);
+    box(x, z, w / 2, d / 2, 0, hgt, mixColor('#98948c', '#4e4a44', h1 * 0.55), 'building');
+    // 屋上の縁+設備
+    box(x, z, w / 2 + 1.5, d / 2 + 1.5, hgt, hgt + 1.1, '#6e6a63', 'concrete');
+    if (h2 > 0.5) box(x + (h1 - 0.5) * w * 0.4, z + (h3 - 0.5) * d * 0.4, w * 0.12, d * 0.12, hgt + 1.1, hgt + 1.1 + 3 + h1 * 5, '#7a766f', 'concrete');
+    if (bv === 0) glow(x, z, hgt + 2.4, 0.4, 0.4, 0.4, '#ff4433');   // 航空障害灯
+  }
+  // --- 瓦礫の散り(小さな塊。歩ける=判定なし)---
+  for (let i = 0; i < 44; i++) {
+    const h1 = hash(i * 3.7 + 0.5), h2 = hash(i * 8.1 + 1.3), h3 = hash(i * 5.3 + 2.7);
+    const x = 60 + h1 * 880, z = 60 + h2 * 880;
+    if (Math.abs(x - AV) < HALF - 10 && Math.abs(z - AV) < HALF - 10) continue;   // 交差点の中央は空ける
+    const c = P(x, 0, z), r = 0.4 + h3 * 1.1;
+    const sh = prismShape([c[0], r * 0.5, c[2]], AXIS_Y, r * 0.5, r * 0.5, r, 5,
+      { jitter: (k) => (hash(i * 11 + k) - 0.5) * r * 0.6 });
+    sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: '#57534c', alpha: 1, tex: 'concrete' }));
+  }
+}
+
+// ==================== 遠景(地平のシルエット) ====================
+// 距離フォグ(220〜900)の外に置く「不透明なシルエット」。照明もフォグも切り、色は空気遠近法を
+// 手で焼く(近い稜線=暗い/遠い稜線=空に近い霞色)。これが無いと地平線がただの直線になる。
+// 戦場が市街(shigai)なら山ではなく高層ビル群のスカイラインを立てる。
+// 生成は戦場+テーマごとに1回(静的ジオメトリ)。Math.random は使わない。
+export function distantSceneryFaces(theme, fieldId, out) {
+  const cx = ARENA_CX, cz = ARENA_CZ;
+  const LAYERS = [
+    { rad: 1150, hMin: 55, hMax: 165, shade: 0.10, haze: 0.10, seg: 110, seed: 3.1 },
+    { rad: 1750, hMin: 120, hMax: 300, shade: 0.34, haze: 0.30, seg: 86, seed: 11.7 },
+    { rad: 2450, hMin: 210, hMax: 460, shade: 0.62, haze: 0.52, seg: 66, seed: 23.3 },
+  ];
+  // 空気遠近法: 遠い層ほど地平の空色へ寄せる(テーマの mountain() を基色に霞を足す)。
+  // arena テーマの mountain() はほぼ黒なので、この霞が無いと3層が同じ黒で重なって奥行きが出ない。
+  const layerCol = (L, extra) => mixColor(theme.mountain(L.shade), theme.sky[3], Math.min(0.88, L.haze + (extra || 0)));
+  const push = (v, color) => out.push({ verts: v, color, alpha: 1, far: true });
+
+  if (fieldId === 'shigai') {
+    // --- 市街: 箱のスカイライン(3層。奥ほど高く霞む)---
+    // ビル群は山稜と違って「近くに見える大きな面」なので、山と同じ明るさだと白い段ボールの
+    // 書割に見える(実機確認 2026-07-31)。基色を暗く取り、霞は控えめに乗せる。
+    const SKY_BASE = ['#191e23', '#232a31', '#2f3841'];
+    const cityCol = (li, L, extra) => mixColor(SKY_BASE[li], theme.sky[3], Math.min(0.6, L.haze * 0.5 + (extra || 0)));
+    LAYERS.forEach((L, li) => {
+      const base = cityCol(li, L, 0);
+      const top = cityCol(li, L, 0.08);
+      const n = Math.round(L.seg * 0.62);
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + hash(i * 1.7 + L.seed) * 0.02;
+        const hh = L.hMin + hash(i * 3.3 + L.seed) * (L.hMax - L.hMin);
+        const w = (0.4 + hash(i * 5.1 + L.seed) * 0.7) * (L.rad * Math.PI * 2 / n) * 0.5;
+        const rr = L.rad * (0.94 + hash(i * 7.9 + L.seed) * 0.14);
+        const bx = cx + Math.cos(a) * rr, bz = cz + Math.sin(a) * rr;
+        // 中心を向く板(遠景=シルエットなので前面のみ。左右の稜線を段付きにして塔らしさを出す)
+        const tx = -Math.sin(a), tz = Math.cos(a);   // 接線方向
+        const p = (s, y) => [bx + tx * s, y, bz + tz * s];
+        push([p(-w, -30), p(w, -30), p(w, hh), p(-w, hh)], base);
+        // 頂部の段(セットバック)+尖塔
+        const w2 = w * (0.4 + hash(i * 9.1 + L.seed) * 0.35);
+        const h2 = hh + hh * (0.08 + hash(i * 2.9 + L.seed) * 0.22);
+        push([p(-w2, hh), p(w2, hh), p(w2, h2), p(-w2, h2)], top);
+        if (hash(i * 13.1 + L.seed) > 0.72) {
+          const w3 = w2 * 0.16;
+          push([p(-w3, h2), p(w3, h2), p(w3, h2 + hh * 0.24), p(-w3, h2 + hh * 0.24)], top);
+        }
+        // 窓の灯(手前2層のみ。夜テーマで街が生きて見える)
+        if (li < 2) {
+          const rows = 3 + Math.floor(hash(i * 17.3 + L.seed) * 3);
+          for (let r = 0; r < rows; r++) {
+            const lh = hash(i * 19.7 + r + L.seed);
+            if (lh < 0.42) continue;
+            const wy = hh * (0.2 + (r / rows) * 0.7);
+            const ws = w * (0.16 + hash(i * 23.1 + r) * 0.3);
+            const wo = (hash(i * 29.3 + r) - 0.5) * w * 1.2;
+            out.push({
+              verts: [p(wo - ws, wy), p(wo + ws, wy), p(wo + ws, wy + hh * 0.05), p(wo - ws, wy + hh * 0.05)],
+              color: lh > 0.8 ? 'rgba(255,214,150,0.75)' : 'rgba(190,214,244,0.5)', alpha: 1, far: true, emissive: true,
+            });
+          }
+        }
+      }
+    });
+    return;
+  }
+
+  // --- 山稜(3層のリング状カーテン。稜線は決定論ノイズ)---
+  LAYERS.forEach((L) => {
+    const base = layerCol(L, 0);
+    const ridge = layerCol(L, 0.16);
+    const hAt = (i) => {
+      const a = i / L.seg;
+      // 3周波の重ね合わせ(端で必ず一周する周期数=継ぎ目なし)
+      const n = 0.5 + 0.5 * (Math.sin(a * Math.PI * 2 * 3 + L.seed) * 0.5
+        + Math.sin(a * Math.PI * 2 * 7 + L.seed * 2.3) * 0.3
+        + Math.sin(a * Math.PI * 2 * 13 + L.seed * 3.7) * 0.2);
+      const j = hash(i * 2.11 + L.seed) * 0.28;
+      return L.hMin + (L.hMax - L.hMin) * Math.min(1, Math.max(0, n * 0.85 + j));
+    };
+    for (let i = 0; i < L.seg; i++) {
+      const a0 = (i / L.seg) * Math.PI * 2, a1 = ((i + 1) / L.seg) * Math.PI * 2;
+      const h0 = hAt(i), h1 = hAt((i + 1) % L.seg);
+      const x0 = cx + Math.cos(a0) * L.rad, z0 = cz + Math.sin(a0) * L.rad;
+      const x1 = cx + Math.cos(a1) * L.rad, z1 = cz + Math.sin(a1) * L.rad;
+      // 稜線側を霞色にする2枚(下=暗い基部 / 上=明るい稜線)=空気遠近法の縦グラデ
+      const mid0 = h0 * 0.55, mid1 = h1 * 0.55;
+      push([[x0, -40, z0], [x1, -40, z1], [x1, mid1, z1], [x0, mid0, z0]], base);
+      push([[x0, mid0, z0], [x1, mid1, z1], [x1, h1, z1], [x0, h0, z0]], ridge);
     }
   });
 }
