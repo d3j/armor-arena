@@ -1,7 +1,7 @@
 // 鋼機工廠 バランス/健全性ハーネス — node harness.mjs
 // KOUKI_DIR=../../public/dev で開発版にも当てられる(既定は本番)。
 const DIR = process.env.KOUKI_DIR || '../../public';
-const { simulate, TMAX } = await import(`${DIR}/sim.js`);
+const { simulate, TMAX, FIELDS } = await import(`${DIR}/sim.js`);
 const { validateBuild, deriveStats } = await import(`${DIR}/parts.js`);
 
 const A = {
@@ -16,7 +16,10 @@ const A = {
   lancer:   { frame:'fr8', legs:'lg13', gen:'gn7', armor:'ar2', wpnR:'wp17', wpnL:'wp15', ai:'ai3', color:'#8fd0ff', decal:'none', name:'' },
   bombard:  { frame:'fr5', legs:'lg14', gen:'gn3', armor:'ar7', wpnR:'wp18', wpnL:'wp16', ai:'ai5', color:'#c2a35c', decal:'none', name:'' },
 };
-const FIELD_IDS = ['plain','sekichu','deitan','crater','haikyo','ibara','shigai'];
+// 戦場は「対象ビルドが実際に持っているもの」から採る。id をここに書き並べると、
+// 本番にまだ無い戦場を混ぜたときに getField が黙って FIELDS[0](=plain)へフォールバックし、
+// 「新戦場も回している」つもりで実は plain を二重に回す=カバレッジが嘘になる(Codex指摘 2026-07-31)。
+const FIELD_IDS = FIELDS.map(f => f.id);
 
 let fail = 0;
 const ok = (name, cond, extra='') => { console.log((cond?'  ✓ ':'  ✗ ')+name+(extra?`  ${extra}`:'')); if(!cond) fail++; };
@@ -69,6 +72,7 @@ for (let i = 0; i < keys.length; i++) for (let j = 0; j < keys.length; j++) {
 durs.sort((a, b) => a - b);
 const med = durs[(durs.length / 2) | 0];
 console.log(`  試合数 ${total} / 撃破決着 ${(100 * destroys / total).toFixed(0)}% / 引分 ${(100 * draws / total).toFixed(1)}% / 時間 med ${med}s p10 ${durs[(durs.length * .1) | 0]}s p90 ${durs[(durs.length * .9) | 0]}s`);
+console.log(`  対象 ${DIR} / 戦場 ${FIELD_IDS.length}種: ${FIELD_IDS.join(' ')}`);   // どのビルドの何を回したかを残す
 const games = 2 * (keys.length - 1) * N;
 console.log('  勝率: ' + keys.map(k => `${k} ${(100 * wins[k] / games).toFixed(0)}%`).join(' / '));
 console.log('  ペア別(行が列に勝つ率):');

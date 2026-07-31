@@ -112,7 +112,8 @@ function partGeometry(part, uvScale) {
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  // 機体スケール(全高 ~8 ワールド単位)基準。タイル密度は質感クラスごと(ゴムのラグは細かく、
+  // 機体スケール(全高 ≈4.2 ワールド単位。St3 から継いだ「~8」は実測とずれていた)基準。
+  // タイル密度は質感クラスごと(ゴムのラグは細かく、
   // 増加装甲の厚板は粗く)=同じ機体の中で「材質が違う」ことが目で分かる。
   g.setAttribute('uv', new THREE.BufferAttribute(planarUVs(pos, uvScale), 2));
   g.computeVertexNormals();           // 非indexed=各三角形が自分の面法線を持つ=フラット

@@ -110,18 +110,30 @@ function toTex(el, { srgb = true, repeat = 1 } = {}) {
 }
 
 // 高さ canvas(グレースケール)→ 法線マップ。巻き込み差分=タイル継ぎ目なし。
+// **出力は必ず canvas(=CanvasTexture)にする。** DataTexture は three の既定が
+// flipY=false / Nearest / mipmap なし で、CanvasTexture(flipY=true / Linear+Mipmap)と食い違う:
+//   ・flipY の差で法線だけが V 方向に反転し、「色はここ・凹凸は上下鏡像の位置」になる
+//     (DataTexture に flipY=true を立てても効かない。UNPACK_FLIP_Y_WEBGL は
+//      ArrayBufferView のアップロードには適用されない=WebGL 仕様)
+//   ・mipmap が無いので遠方でちらつき、anisotropy も効かない(地面が一番効く)
+// canvas 経由にすれば3枚組が同じ設定で揃う。
 function normalFromHeight(hc, S, strength) {
   const src = hc.getImageData(0, 0, S, S).data;
-  const buf = new Uint8Array(S * S * 4);
+  const out = mkCv(S);
+  const img = out.c.createImageData(S, S);
+  const buf = img.data;
   const at = (x, y) => src[(((y + S) % S) * S + ((x + S) % S)) * 4] / 255;
   for (let y = 0; y < S; y++) {
     for (let x = 0; x < S; x++) {
-      // Sobel(3x3)で勾配
+      // Sobel(3x3)で勾配(canvas 座標。y は下向き)
       const dx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1))
                - (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1));
       const dy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1))
                - (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1));
-      let nx = -dx * strength, ny = -dy * strength, nz = 1;
+      // 高さ場 h(u,v) の法線は (-∂h/∂u, -∂h/∂v, 1)。u は canvas x と同方向だが、
+      // v は flipY=true のため canvas y と逆方向 → ∂h/∂v = -dy なので ny = +dy。
+      // (符号を間違えると鋲や溶接ビードが「凹み」として陰影が付く)
+      let nx = -dx * strength, ny = dy * strength, nz = 1;
       const l = Math.hypot(nx, ny, nz) || 1;
       nx /= l; ny /= l; nz /= l;
       const p = (y * S + x) * 4;
@@ -131,10 +143,8 @@ function normalFromHeight(hc, S, strength) {
       buf[p + 3] = 255;
     }
   }
-  const t = new THREE.DataTexture(buf, S, S, THREE.RGBAFormat);
-  t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.RepeatWrapping;
-  t.needsUpdate = true;
-  return t;
+  out.c.putImageData(img, 0, 0);
+  return toTex(out.el, { srgb: false });   // NoColorSpace + Repeat + flipY/フィルタは albedo と同一
 }
 
 // ==================== 共通の描き込み部品 ====================

@@ -75,8 +75,8 @@
     const box = document.createElement('div');
     box.style.cssText = 'color:#8f8;font:11px monospace';
     let cv;
-    if (t.image instanceof HTMLCanvasElement) cv = t.image;                 // CanvasTexture
-    else {                                                                   // DataTexture(法線)
+    if (t.image instanceof HTMLCanvasElement) cv = t.image;                 // 3枚組はすべて CanvasTexture
+    else {                                                                   // 念のため DataTexture も描ける
       cv = document.createElement('canvas'); cv.width = t.image.width; cv.height = t.image.height;
       const c = cv.getContext('2d'); const d = c.createImageData(cv.width, cv.height);
       d.data.set(t.image.data); c.putImageData(d, 0, 0);
