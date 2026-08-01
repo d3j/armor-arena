@@ -10,6 +10,10 @@
 //              age01:number(0..1), side?:'R'|'L' } | null  … 直近のfireイベントに応じてgame.jsが渡す
 // シムの (x,y)m -> 3D の (x,z)。y=高さ。機体全高≈4.2m(MECH_SCALE参照)。Math.random は使用しない。
 
+// このファイル唯一の import。瓦礫の天端の割合は「シムが標高を出すときの形」そのものなので、
+// r3d 側に数値を写すと必ずいつか食い違う(斜面の上に機体が浮く/めり込む)。fields.js を正本にする。
+import { CLIMB_TOP_FRAC } from './fields.js';
+
 const DEG = Math.PI / 180;
 
 // 機体全高スケール定数。旧デザインの生寸法(標準二脚で全高≈7.07m)を約4.2m(ボトムズAT級)へ
@@ -1642,8 +1646,10 @@ export function shotWorldFaces(scene, cam, out) {
   (scene.shots || []).forEach((s, si) => {
     const age = clamp01(s.age01 == null ? 0 : s.age01);
     // ⑤ 発射=マズル高さ、着弾=被弾部位高さへ斜めに。地面すれすれの水平飛翔を解消。
-    const srcY = s.y0 != null ? s.y0 : MUZZLE_Y;
-    const dstY = s.y1 != null ? s.y1 : hitPartY(s.kind, si, s.tx, s.ty);
+    // v5: ey0/ey1 = 射手/標的の足場の標高。瓦礫の上から撃つと銃口も着弾点もその分だけ高い
+    //     (マズルフラッシュは computeMechPose 経由で既に上がるので、弾道だけ地上高に残ると割れる)。
+    const srcY = (s.y0 != null ? s.y0 : MUZZLE_Y) + (s.ey0 || 0);
+    const dstY = (s.y1 != null ? s.y1 : hitPartY(s.kind, si, s.tx, s.ty)) + (s.ey1 || 0);
     const A = [s.x, srcY, s.y];
     const B = [s.tx, dstY, s.ty];
     const style = SHOT_STYLES[s.kind] || SHOT_STYLES.rifle;
@@ -1653,6 +1659,21 @@ export function shotWorldFaces(scene, cam, out) {
 
 export function blastWorldFaces(scene, out, tSec) {
   (scene.blasts || []).forEach((b, bi) => {
+    // v5: b.ey = 炸裂点の足場の標高。炸裂の形は種類ごとに別関数へ散っていて y の起点も
+    //     bi 箇所あるので、各所に足して回ると必ず取りこぼす。一旦受けてから頂点をまとめて上げる。
+    //     (octaShape 等は面どうしで頂点配列を共有するので、その場書き換えではなく新しい配列を作る)
+    const ey = b.ey || 0;
+    if (!ey) { blastOne(b, bi, out, tSec); return; }
+    const tmp = [];
+    blastOne(b, bi, tmp, tSec);
+    for (const f of tmp) {
+      if (f.verts) f.verts = f.verts.map((v) => [v[0], v[1] + ey, v[2]]);
+      out.push(f);
+    }
+  });
+}
+function blastOne(b, bi, out, tSec) {
+  {
     const age = clamp01(b.age01 == null ? 0 : b.age01);
     const kind = b.kind || (b.big ? 'boom' : 'hit');
     if (kind === 'smoke') {
@@ -1746,7 +1767,7 @@ export function blastWorldFaces(scene, out, tSec) {
       const end = add(start, scaleV(dir, len * 3));
       out.push({ verts: billboardRibbonSimple(start, end, 0.05 * MECH_SCALE), color: '#ffe0b0', alpha: alpha * 0.7, emissive: true });
     }
-  });
+  }
 }
 
 // ---- 着弾(kind==='hit')の武器別演出。b={x,y,wpn,age01} ----
@@ -2001,9 +2022,11 @@ function rubbleFaces(o, out, opt) {
   // 土台: 天端 62% のテーパー(裾が広く天端が平ら=登れる形)。縁を乱して自然物にする。
   // chunky=割れた舗石(角張った5面+強い乱れ)。丸い8面の塚だと路上の「石ころ」に見えてしまい、
   // 「崩れた歩道」には読めない(実機確認 2026-08-01)。
+  // 天端の割合は fields.js の CLIMB_TOP_FRAC と**必ず同じ**にする(シムはこの形で標高を出す)。
+  // chunky でも割合は変えず、乱れの強さだけで角張らせる。
   const chunky = !!(opt && opt.chunky);
   const sides = chunky ? 5 : 8;
-  const body = prismShape([o.x, h / 2, o.y], AXIS_Y, h / 2, o.r * (chunky ? 0.8 : 0.62), o.r,
+  const body = prismShape([o.x, h / 2, o.y], AXIS_Y, h / 2, o.r * CLIMB_TOP_FRAC, o.r,
     sides, { jitter: (i) => (hash(seed + i * 3.3) - 0.5) * o.r * (chunky ? 0.5 : 0.24) });
   body.faces.forEach((f) => out.push({ verts: f.map((vi) => body.verts[vi]), color: baseCol, alpha: 1, tex }));
   // 裾に散る岩塊/コンクリ塊(土台だけだと「置いた円柱」に見える)
@@ -2020,7 +2043,7 @@ function rubbleFaces(o, out, opt) {
   // 天端の縁取り。機体の腰より高い足場(=露出ペナルティが効く高さ)にだけ付け、
   // 「ここに乗ると見晴らしと引き換えに晒される」を観戦者が形で読めるようにする。
   if (h >= 2) {
-    const rt = o.r * 0.62, rv = [];
+    const rt = o.r * CLIMB_TOP_FRAC, rv = [];
     for (let i = 0; i < sides; i++) {
       const a = (i / sides) * Math.PI * 2;
       rv.push([o.x + Math.cos(a) * rt, h + 0.06, o.y + Math.sin(a) * rt]);

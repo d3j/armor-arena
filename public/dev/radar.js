@@ -2,7 +2,8 @@
 // 契約: export function createRadar(canvas) -> { render(view, tSec) }
 //   view = { mechs:[{x,y,h,hp,en,color,alive}], shots:[{x,y,tx,ty,kind,age01}],
 //            blasts:[{x,y,age01,kind?:'hit'|'boom'|'parry',big?}],
-//            obstacles:[{kind:'wall'|'mud'|'spike',x,y,r,alive,hpFrac}], sweep:tSec }
+//            obstacles:[{kind:'wall'|'mud'|'spike'|'rubble',x,y,r,alive,hpFrac,h?}], sweep:tSec }
+//            rubble の h(足場の標高m)は 2 以上で二重リング=「乗ると晒される高所」の記号。
 // blasts.kind が無い場合は big(bool)から互換的に 'hit'/'boom' を推定する。
 // Math.random は使用しない。ゆらぎは hash(n) による決定論ハッシュのみ。
 

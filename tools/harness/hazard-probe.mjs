@@ -78,6 +78,9 @@ for (const fid of HFIELDS) {
           }
           prev = mm;
         }
+        // 試合終了時にまだ地帯の中に居たエピソードを閉じる。落とすと「泥に入ったまま決着した試合」の
+        // 横断が丸ごと未計上になり、突入率と crossMud/crossSpike が過少に出る(Codex指摘 2026-08-01)。
+        closeRun(mudRun, 'crossMud'); closeRun(spkRun, 'crossSpike');
         if (rubRun >= 5) st.climbs++;
       }
       // 高所での被弾/回避(標高は states から時刻引き)
@@ -151,9 +154,13 @@ console.log('== 踏破判定(v5 小障害物) ==');
     Object.values(legAll).reduce((a, v) => a + v.mechGames, 0) >= 0.2,
     `${(Object.values(legAll).reduce((a, v) => a + v.climbs, 0) /
         Object.values(legAll).reduce((a, v) => a + v.mechGames, 0)).toFixed(2)}回/戦`);
-  gate('乗る者と迂回する者が共存(地上系で最長滞在 ≥ 最短滞在の2倍。全員同じ答えなら選択が無い)',
+  // `max >= min*2` だけだと min=0 のとき恒真で、**全脚種が0(誰も乗らない)でも通ってしまう**。
+  // 「よく乗る側が実際に乗っている(絶対量)」と「避ける側が明確に少ない(相対)」の二段にする。
+  gate('乗る者と迂回する者が共存(よく乗る脚が1.0s/戦以上・避ける脚はその半分以下)',
     (() => { const g = ['biped', 'tank', 'wheel', 'reverse'].filter(k => legAll[k]).map(k => dw(legAll[k]));
-             return g.length >= 3 && Math.max(...g) >= Math.min(...g) * 2; })(),
+             if (g.length < 3) return false;
+             const hi2 = Math.max(...g), lo2 = Math.min(...g);
+             return hi2 >= 1.0 && lo2 <= hi2 * 0.5; })(),
     ['biped', 'tank', 'wheel', 'reverse'].filter(k => legAll[k]).map(k => `${k}=${dw(legAll[k]).toFixed(1)}s`).join(' '));
   // 脚種の分かれ方は「乗る回数」ではなく「1回あたり何秒居座るか」に出る。逆関節は回数こそ多いが
   // 跳び越えて即降りる(回避が持ち味なので高所に留まる価値が無い)。履帯は乗ったら砲座にする。

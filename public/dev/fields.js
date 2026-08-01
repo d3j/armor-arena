@@ -157,7 +157,7 @@ export const FIELDS = [
       { kind: 'rubble', x: 429, y: 240, r: 11, h: 1.1, hp: null, deco: 'curb' },
       { kind: 'rubble', x: 571, y: 320, r: 11, h: 1.1, hp: null, deco: 'curb' },
       { kind: 'rubble', x: 429, y: 760, r: 11, h: 1.1, hp: null, deco: 'curb' },
-      { kind: 'rubble', x: 571, y: 900, r: 11, h: 1.1, hp: null, deco: 'curb' },
+      { kind: 'rubble', x: 571, y: 940, r: 11, h: 1.1, hp: null, deco: 'curb' },
       { kind: 'rubble', x: 240, y: 429, r: 11, h: 1.1, hp: null, deco: 'curb' },
       { kind: 'rubble', x: 320, y: 571, r: 11, h: 1.1, hp: null, deco: 'curb' },
       { kind: 'rubble', x: 760, y: 429, r: 11, h: 1.1, hp: null, deco: 'curb' },
@@ -205,6 +205,11 @@ export const MUD_SINK = 1.8;
 export const CLIMB_FACTOR = { biped: 0.72, quad: 0.80, hover: 1.0, tank: 0.86, wheel: 0.45, reverse: 0.82 };
 // 露出率の基準高(m)。機体全高4.2m級=自分の背丈だけ高い所に立つと露出率1.0。
 export const CLIMB_H_REF = 4.0;
+// 天端の割合: 判定円の内側 CLIMB_TOP_FRAC×r までが平らな足場で、そこから縁へ向かって高さが0に落ちる。
+// **シム(標高の計算)と描画(塚のテーパー rTop)が同じ値を使う**のが肝で、片方だけ変えると
+// 「斜面の上に機体が浮く/めり込む」が出る(実測 2026-08-01: 天端を 0.62 に固定したまま
+// シムが円全体で持ち上げていたため、乗っているサンプルの 55.4% が斜面の上に浮いていた)。
+export const CLIMB_TOP_FRAC = 0.62;
 // 乗っている間の効き: 回避×(1-0.42e) / 命中+0.10e。人間の言葉の「丘の頂点は露出が大きい」を
 // 「躱せないが当てやすい」の一対にした。射線(losBlockedBy)には触れない=数mの高低差では
 // 12〜20mの壁越しは見えないので、遮蔽の勘定を変えないほうが観戦者の理解と一致する。

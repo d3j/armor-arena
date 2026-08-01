@@ -10,8 +10,8 @@
 //        回避↓ / 命中↑(標高 h による露出と見晴らし)。ハザード認知に「渡る/迂回」に次ぐ
 //        第3の選択肢「乗る」を足した。rng は一切増やしていない(判断は機体状態のみ)。
 import { deriveStats, bandMult, BANDS } from './parts.js';
-import { getField, MUD_FACTOR, SPIKE_DPS, MUD_SINK, losBlockedBy,
-         CLIMB_FACTOR, CLIMB_EVA_PENALTY, CLIMB_ACC_BONUS, climbExposure } from './fields.js';
+import { getField, MUD_FACTOR, SPIKE_DPS, MUD_SINK, losBlockedBy, CLIMB_FACTOR,
+         CLIMB_EVA_PENALTY, CLIMB_ACC_BONUS, CLIMB_TOP_FRAC, climbExposure } from './fields.js';
 export { losBlockedBy } from './fields.js';
 export { validateBuild } from './parts.js';
 export { FIELDS, getField } from './fields.js';
@@ -72,6 +72,7 @@ function mkMech(build, x, y, h, pilot) {
            hzSide: 0, hzAt: -9, hzEscOn: false,       // ハザード迂回方向ラッチ+脱出ヒステリシス(振動防止)
            hzWant: 0, hzWantAt: -9,                   // 「踏む意欲」の慣性(判断の毎tick反転防止)
            climbH: 0, footY: 0,                       // Ver7: 足場の標高(climbH=露出用の正値 / footY=描画用。泥は負)
+           climbOn: false, climbAt: -9,               // 「踏破」電文のヒステリシス+クールダウン
            pd: [0, 0, 0, 0, 0],                       // 部位状態(armR,armL,legs,gen,body)
            curEngage: st.parts.ai.engage, cand: null, candIdx: 0,   // 適応交戦距離
            riposteUntil: -1,                          // Ver6: パリィ後の反撃窓の終了時刻
@@ -400,19 +401,33 @@ export function simulate(buildA, buildB, seed, opts = {}) {
       //          当たり判定は変えない(露出率は正の標高だけを読む=沈んでも的は小さくならない)。
       let footY = 0;
       if (lgKind !== 'hover') {
-        let onR = null;
+        let onRubble = false;
         for (const o of rubbles) {
-          if (Math.hypot(me.x - o.x, me.y - o.y) < o.r && (onR === null || o.h > onR.h)) onR = o;
+          const d0 = Math.hypot(me.x - o.x, me.y - o.y);
+          if (d0 >= o.r) continue;
+          onRubble = true;
+          // 標高は縁に向けて落とす。天端(CLIMB_TOP_FRAC×r)までが平らで、そこから縁で0。
+          // 描画の塚と同じ形なので「斜面の上に浮く」が起きない。重なりはいちばん高い所を採る。
+          const y = o.h * clamp((1 - d0 / o.r) / (1 - CLIMB_TOP_FRAC), 0, 1);
+          if (y > footY) footY = y;
         }
-        if (onR) {
+        if (onRubble) {
+          // 踏破の重さは円の全体にかかる(瓦礫の上は縁でも一様に歩きにくい)。
+          // 高いのは真ん中だけ=丘の頂上に立った者だけが露出と見晴らしを引き受ける。
           const cf = CLIMB_FACTOR[lgKind] != null ? CLIMB_FACTOR[lgKind] : 0.72;
           vx *= cf; vy *= cf; spd *= cf;
-          footY = onR.h;
         } else if (mudded) {
           footY = -MUD_SINK * (1 - mudF);
         }
       }
-      if (footY > 0 && footY > me.climbH) ev(t, 'climb', { who: i, h: footY, x: me.x, y: me.y });
+      // 電文に出す「踏破」は天端に達した瞬間だけ。縁を出入りするたび鳴らないよう
+      // ヒステリシス(1.5で入り1.0で抜ける)+3秒のクールダウン(状態のみ=決定論)。
+      if (footY >= 1.5) {
+        if (!me.climbOn) {
+          me.climbOn = true;
+          if (t - me.climbAt >= 3) { me.climbAt = t; ev(t, 'climb', { who: i, h: Math.round(footY * 100) / 100, x: me.x, y: me.y }); }
+        }
+      } else if (footY < 1.0) me.climbOn = false;
       me.climbH = footY > 0 ? footY : 0;   // 露出/見晴らしの入力は正の標高だけ
       me.footY = footY;
       // 壁の回避(斥力)
