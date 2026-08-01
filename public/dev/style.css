@@ -601,10 +601,27 @@ table.rank-table tr.me { background: rgba(255,176,32,.08); }
 .cockpit .control-box .tgt-head { margin: 0; }
 .cockpit .control-box .hud-bottom { flex-wrap: nowrap; }
 
-/* 戦果(勝敗の余韻): 画面中央のガラスパネル */
+/* 戦果(勝敗の余韻): 画面左の中段に置くガラスパネル。
+   **中央に置いてはいけない**: 余韻カメラは敗者を画面中心に据える(r3d.js の aftermath 専用モード)ので、
+   中央のパネルは必ず敗者を隠す(人間報告 2026-08-01)。周回する勝者は画角(±41°)いっぱいの
+   ±37°まで振れるので左右どちらに置いても周回の一部には重なるが、**主役の敗者は常時見える**方を採る。
+   縦は中段(上のTGT-Aと下のレーダーPiPの間)。窓が低いときは下のメディアクエリで積み直す。 */
 .cockpit .aftermath-box {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: min(440px, 42vw); pointer-events: auto;
+  position: absolute; left: 16px; top: 50%; transform: translateY(-50%);
+  width: min(360px, 28vw); pointer-events: auto;
   background-color: rgba(13, 18, 24, .88);
   box-shadow: 0 12px 44px rgba(0, 0, 0, .6);
+}
+/* 縦が詰まった窓では中段に置けない: .cockpit は幅(1100px)だけの条件なので、高さ700〜800pxの
+   ノートPC窓ではレーダーPiPと重なる(パネルは pointer-events:auto なのでレーダー操作まで食う)。
+   その帯ではレーダーの上端を基準に積む=決着種別で行数が増えても、リプレイボタンが1つ増えて
+   ボタン列が2段に折り返しても、上へ伸びるだけで重ならない。
+   境界820px の根拠: 中段配置が成立する条件は H/2 − パネル高/2 > safe-b+16+レーダー高。
+   パネル高は戦果の行数で変わり(負傷・KIA・墓場・引き継ぎが載ると 204→300px 級)、
+   最悪ケースの交点が H≈804 なので余裕を見て 820 で切り替える。 */
+@media (max-height: 820px) {
+  .cockpit .aftermath-box {
+    top: auto; transform: none;
+    bottom: calc(var(--safe-b) + 16px + min(236px, 20vw) + 12px);
+  }
 }

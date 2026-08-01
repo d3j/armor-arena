@@ -15,17 +15,17 @@
 
 import * as THREE from './vendor/three.module.min.js';
 import {
-  computeMechPose, computeAutoCamera, containEye, scaleScene, themeOf, THEMES,
+  computeMechPose, computeAutoCamera, containEye, cameraFloorClamp, scaleScene, themeOf, THEMES,
   poseMechFaces, shotWorldFaces, blastWorldFaces, obstacleWorldFaces,
   fieldDecorFaces, distantSceneryFaces,
-  MECH_SCALE, ARENA_CX, ARENA_CZ,
+  MECH_SCALE, ARENA_CX, ARENA_CZ, FOV_Y,
 } from './r3d.js';
 import {
   partMatClass, partMatSet, groundMaps, rockMaps, concreteMaps, buildingMaps, envEquirect,
 } from './tex.js';
 
 const DEG = Math.PI / 180;
-const FOV_Y_DEG = 55;               // r3d.js の FOV_Y と一致
+const FOV_Y_DEG = FOV_Y / DEG;      // 縦画角は r3d.js が正本(写すと必ずいつか食い違う)
 const CAM_TAU = 0.5, CAM_DT_MAX = 0.1;
 
 // ---- 演出面の色文字列 → [r,g,b,alpha](0..1)。'#hex' / 'rgb()' / 'rgba()' を受ける(キャッシュ付き) ----
@@ -640,7 +640,7 @@ export function createR3DThree(canvas) {
         const occ = !!mk[1].occluded;
         const sig = Math.round(distM) + ':' + occ;
         if (sig !== mkSig) { mkSig = sig; drawMarkerTex(Math.round(distM), occ); }
-        marker.position.set(mk[1].x, 13.5 * MECH_SCALE, mk[1].y);
+        marker.position.set(mk[1].x, 13.5 * MECH_SCALE + (mk[1].elev || 0), mk[1].y);   // v5: 頭上マーカーも足場の標高込み
       }
     }
     marker.visible = show;
@@ -726,7 +726,9 @@ export function createR3DThree(canvas) {
     const occ = !!(mk[1] && mk[1].occluded);   // 遮蔽(岩柱LOS)は両機間で対称なので mechs[1] の旗を共用
     const sig = dist + ':' + occ;
     if (sig !== rtSig) { rtSig = sig; drawReticleTex(dist, occ); }
-    reticle.position.set(tgt.x, 3 * MECH_SCALE, tgt.y);
+    // 高さは shotPOV の target と**必ず同じ式**にする(v5 で足場の標高込みになった。
+    // 揃えないと、瓦礫の上の敵を撃つときリングだけ最大3.2m下に取り残される)。
+    reticle.position.set(tgt.x, 3 * MECH_SCALE + (tgt.elev || 0), tgt.y);
     reticle.visible = true;
     cockpit.scale.set(COCKPIT_H * aspect, COCKPIT_H, 1);
     cockpit.visible = true;
@@ -820,9 +822,13 @@ export function createR3DThree(canvas) {
     }
     camSt.t = tSec; camSt.shotIdx = raw.shotIdx;
     if (raw.contain) camSt.eye = containEye(camSt.eye, camSt.target, aspect, scene.mechs || []);
+    // 小障害物(瓦礫・縁石)の中に潜らせない。**平滑化と包含のあと**=表示カメラそのものに効かせる
+    // (目標だけ直しても、カットの間を補間する途中で塚を突っ切る)。床の値は 0.18s でなます
+    // =塚の縁を跨ぐ瞬間に eye が段差状に飛ぶのを防ぐ。カット時は即座に合わせる。
+    cameraFloorClamp(scene, camSt.eye, camSt, dt, cut);
     camera.position.set(camSt.eye[0], camSt.eye[1], camSt.eye[2]);
     camera.lookAt(camSt.target[0], camSt.target[1], camSt.target[2]);
-    return { target: camSt.target, showMarkers: raw.showMarkers, pov: raw.pov == null ? null : raw.pov, shotIdx: raw.shotIdx };
+    return { eye: camSt.eye, target: camSt.target, showMarkers: raw.showMarkers, pov: raw.pov == null ? null : raw.pov, shotIdx: raw.shotIdx };
   }
 
   // 機体の色状態: 撃破=暗く / 被弾白熱(flash01)=白へ寄せる(ソフト版 poseMechFaces の色補正と同じ)。
@@ -922,5 +928,10 @@ export function createR3DThree(canvas) {
     renderer.render(scene3, camera);
   }
 
-  return { render };
+  // 新しい試合を始める側からカメラの記憶を断ち切るための明示リセット(game.js startBattle が呼ぶ)。
+  // t=null にすると次フレームが reset 扱いになり、computeAutoCamera 側が camSt の記憶を全部捨てる。
+  function resetCamera() {
+    camSt.t = null; camSt.eye = null; camSt.target = null; camSt.shotIdx = -1; camSt.floorY = null;
+  }
+  return { render, resetCamera };
 }

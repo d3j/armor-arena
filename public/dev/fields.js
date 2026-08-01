@@ -215,6 +215,32 @@ export const CLIMB_TOP_FRAC = 0.62;
 // 12〜20mの壁越しは見えないので、遮蔽の勘定を変えないほうが観戦者の理解と一致する。
 export const CLIMB_EVA_PENALTY = 0.42;
 export const CLIMB_ACC_BONUS = 0.10;
+// (x,y)=シムm に立ったときの足元の標高オフセット(m。瓦礫に乗れば+/泥に沈めば−)。
+// **sim.js の移動処理(footY)と同じ式**にすること: 天端まで平ら→縁で0のランプ・重なりは一番高い所・
+// 瓦礫が優先で泥はその次・**hover はどちらも起きない**(浮いているので乗りも沈みもしない)。
+// シムは自分の移動ループの中で同じ計算を持っており、こちらは「シムが計算していない位置の足元」が
+// 要る側(決着後の余韻で勝者を歩かせる game.js)のための入口。シムの状態がある場面ではそちらが正。
+export function footYAt(field, x, y, legsKind) {
+  if (legsKind === 'hover') return 0;
+  let footY = 0, onRubble = false, mudded = false;
+  for (const o of (field && field.obstacles) || []) {
+    if (o.kind === 'rubble') {
+      const d = Math.hypot(x - o.x, y - o.y);
+      if (d >= o.r) continue;
+      onRubble = true;          // 高さ0/未指定の瓦礫でも「乗っている」= 泥には沈まない(sim と同じ枝)
+      if (!(o.h > 0)) continue;
+      const h = o.h * Math.max(0, Math.min(1, (1 - d / o.r) / (1 - CLIMB_TOP_FRAC)));
+      if (h > footY) footY = h;
+    } else if (o.kind === 'mud' && !mudded) {
+      if (Math.hypot(x - o.x, y - o.y) < o.r) mudded = true;
+    }
+  }
+  if (!onRubble && mudded) {
+    const mudF = MUD_FACTOR[legsKind] != null ? MUD_FACTOR[legsKind] : 0.6;
+    footY = -MUD_SINK * (1 - mudF);
+  }
+  return footY;
+}
 // 標高 h(m) → 露出率 0..1
 export function climbExposure(h) {
   const e = (h || 0) / CLIMB_H_REF;

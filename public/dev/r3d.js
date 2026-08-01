@@ -2444,6 +2444,62 @@ export function decorLiftAt(fieldId, x, z, pad) {
   return best;
 }
 
+// --- カメラの足場: 小障害物の中に潜り込ませない ---
+// 「乗り上げるもの」(踏破可能な瓦礫 rubble・装飾の縁石/コンクリ塊)は、機体だけでなく**カメラに
+// とっても床**。至近ショット(白兵1.4/決着カット1.7/肩越し4.8×MECH_SCALE)は eye が2m前後まで
+// 下がるので、天端3.2m・半径15mの瓦礫塚に入ると画面が土砂で埋まる(人間報告 2026-08-01)。
+// 壁(wall)は近接カットの透過(r3d-three updateObstacleCull)が受け持ち、茨の棘は細く画面を
+// 覆わないので対象外。x,z=ワールド座標 / 返り値=描画単位の高さ(0=素の地面)。
+const CAM_FOOT_PAD = 1.5;   // 装飾の踏み面に対する余裕(シムm)。カメラに footprint は無いが縁を掠らせない
+// 足場から浮かせる高さ。**設計上いちばん低いアイレベル(白兵 1.4×MECH_SCALE=0.84)より下に置く**こと:
+// これを超える値にすると、瓦礫の上の殴り合いで必ずクランプが働き「低い煽り」が失われる。
+export const CAM_FLOOR_CLEAR = 0.6;   // 通常の浮かせ量
+const CAM_FLOOR_HARD = 0.35;          // 絶対に割らない下限(なましが追いつく間のめり込み止め)
+// 床が低いうちは浮かせ量も比例で立ち上げる(縁での段差防止)。係数は「床の傾きを何倍に増幅するか」
+// でもあるので大きくしない: 3 にすると塚の縁を横切るカメラが床の4倍の速さでせり上がって跳ねて見える
+// (ハーネス cam-probe の「縁を跨いでも段差で跳ねない」が実測で落ちる)。
+const CAM_FLOOR_RAMP = 1;
+export function cameraFloorAt(scene, x, z) {
+  let top = 0;
+  for (const o of (scene && scene.obstacles) || []) {
+    if (o.kind !== 'rubble' || o.alive === false) continue;
+    // h 未定義は 0.6(rubbleFaces が描く既定の高さ)。fields.js の footYAt は同じ場合に「乗らない」
+    // =0 を返すが、これは意図的な非対称: あちらは**シムの足元**の正本、こちらは**描かれた面**の正本。
+    const h = o.h > 0 ? o.h : 0.6;
+    if (h <= top) continue;
+    const dx = x - o.x, dz = z - o.y;
+    const d = Math.hypot(dx, dz);
+    if (d >= o.r) continue;
+    // **シム(sim.js の標高)と同じ形**で高さを出す: 天端(CLIMB_TOP_FRAC×r)までが平らで、そこから
+    // 縁へ向かって0に落ちるランプ。円内一律 o.h にすると縁を跨ぐ瞬間にカメラが天端ぶん(最大3.2m)
+    // 跳ね、塚の外に立つ機体まで見下ろしの画になる。描画(rubbleFaces)は同じランプに頂点ジッタ
+    // (±0.12r・chunky は ±0.25r)が乗るので方位によっては数十cm外れるが、浮かせ量が吸収する。
+    const y = h * Math.max(0, Math.min(1, (1 - d / o.r) / (1 - CLIMB_TOP_FRAC)));
+    if (y > top) top = y;
+  }
+  // 装飾の踏み面はシムm座標で持つ(fieldDecorFaces が内側で WORLD_SCALE をかける)ので逆変換する。
+  const S = WORLD_SCALE;
+  const sx = ARENA_CX + (x - ARENA_CX) / S, sz = ARENA_CZ + (z - ARENA_CZ) / S;
+  return Math.max(top, decorLiftAt(scene && scene.field, sx, sz, CAM_FOOT_PAD));
+}
+
+// 表示カメラを足場の上へ持ち上げる(平滑化・包含のあとに効かせる最終段。レンダラとハーネスの
+// 唯一の実装=定数を二重管理しないため、r3d-three ではなくここに置く)。
+// eye を破壊的に持ち上げ、なましの状態は camSt.floorY に持つ。snap=カット時(なまさず即座に合わせる)。
+// 浮かせ量は床が低いうちは比例で立ち上げる(`floor>0 になった瞬間に +CLEAR` だと、塚の縁を跨ぐ
+// 一歩で eye が段差状に跳ぶ。ランプで床が0から連続に立ち上がる意味が無くなる)。
+export function cameraFloorClamp(scene, eye, camSt, dt, snap) {
+  const fl = cameraFloorAt(scene, eye[0], eye[2]);
+  camSt.floorY = (snap || camSt.floorY == null) ? fl
+    : camSt.floorY + (fl - camSt.floorY) * (1 - Math.exp(-Math.max(0, dt) / 0.18));
+  if (camSt.floorY < 0.02) camSt.floorY = 0;   // なましの尾を切る(素の地面に微小な下限が残り続けない)
+  const soft = camSt.floorY + Math.min(CAM_FLOOR_CLEAR, camSt.floorY * CAM_FLOOR_RAMP);
+  const hard = fl + Math.min(CAM_FLOOR_HARD, fl * CAM_FLOOR_RAMP);
+  const minY = Math.max(soft, hard);
+  if (eye[1] < minY) eye[1] = minY;
+  return eye;
+}
+
 // ==================== 遠景(地平のシルエット) ====================
 // 距離フォグ(220〜900)の外に置く「不透明なシルエット」。照明もフォグも切り、色は空気遠近法を
 // 手で焼く(近い稜線=暗い/遠い稜線=空に近い霞色)。これが無いと地平線がただの直線になる。
@@ -2569,6 +2625,12 @@ export const THEMES = {
 export function themeOf(scene) { return scene && scene.theme === 'arena' ? THEMES.arena : THEMES.training; }
 
 
+// 余韻(決着後)の勝者が敗者の周りを回る半径。**シム単位の正本**で、game.js の演出(R2)と
+// r3d.js のカメラ距離の下限が同じ数を見るために置く(片方だけ変えるとカメラが旋回円の内側に入る)。
+// 描画のワールド単位では ×WORLD_SCALE ≈ 10.35m。
+export const AFTERMATH_ORBIT_R_SIM = 23;
+const AFTERMATH_ORBIT_R = AFTERMATH_ORBIT_R_SIM * WORLD_SCALE;
+
 // ==================== カメラ・ディレクター(camera:'auto') ====================
 // 手動カメラ(scene.camera.eye指定)はレンダラ側(r3d-three.js updateCamera)で不変のまま分岐する。
 // 'auto' はディレクター(以下の決定論的なショット割り)が毎フレーム「目標 eye/target」を出し、
@@ -2636,11 +2698,14 @@ function shotOrbit(c) {
 const BASE_SHOT_FNS = [shotTrack, shotTripod, shotDolly, shotCrane, shotOrbit];
 
 // ---- ハード包含(両機フレーム内の毎フレーム保証) ----
+// ただし v5 以降、表示側の最後に**足場クランプ**(r3d-three updateCamera / cameraFloorAt)が入る。
+// 瓦礫の天端より下に eye が来るときだけ持ち上がるので包含がわずかに緩むことがある=
+// 「めり込まない」が包含より優先(土砂で画面が埋まるほうが破綻が大きい)。
 // 基本ショット/aftermathでは、ディレクターが出した目標カメラに対し両機の射影を検査し、
 // どちらかが安全枠(NDCの±SAFE_FRAME=画面の約88%)から出るなら視線軸に沿って後退して収める。
 // 後退は eye を -forward 方向へ動かすだけなので視線の向き(基底)は変わらない=純粋なドリーバック。
 // EMA距離による framingDistance は「下限(基準の画角)」で、この検査が最終権威。
-const FOV_Y = 55 * DEG;
+export const FOV_Y = 55 * DEG;   // 縦画角の正本(r3d-three のカメラ・ハーネスもこれを読む)
 const SAFE_FRAME = 0.88;
 function framePoints(mechs, right) {
   // 各機体の包含チェック点: 足元/頭上(全高4.2m+マージン≒1.3m)を左右マージン(±2.1m)付きで。
@@ -2652,9 +2717,10 @@ function framePoints(mechs, right) {
     const mm = mechs[i];
     if (!mm) continue;
     const x = mm.x || 0, z = mm.y || 0;
+    const e = mm.elev || 0;   // v5: 足場の標高。0固定だと瓦礫の上の機体が上端からはみ出す
     for (const s of [-1, 1]) {
-      pts.push([x + right[0] * lat * s, 0, z + right[2] * lat * s]);
-      pts.push([x + right[0] * lat * s, top, z + right[2] * lat * s]);
+      pts.push([x + right[0] * lat * s, e, z + right[2] * lat * s]);
+      pts.push([x + right[0] * lat * s, e + top, z + right[2] * lat * s]);
     }
   }
   return pts;
@@ -2694,13 +2760,14 @@ function shotOverShoulder(M, O, sideSign) {
   const rightMO = [-fwdMO[2], 0, fwdMO[0]];
   const back = 3.2 * MECH_SCALE;  // 肩の後ろ ≈1.9m
   const lat = 1.9 * MECH_SCALE;   // 横へ ≈1.1m(手前機を画面端へ)
-  const hgt = 4.8 * MECH_SCALE;   // 肩上 ≈2.9m(全高4.2mの肩口より少し上)
+  // v5: 肩の高さは足場の標高込み。瓦礫の上に立つ機体の肩越しを地上高で撮ると、カメラが塚の中に埋まる。
+  const hgt = 4.8 * MECH_SCALE + (M.elev || 0);   // 肩上 ≈2.9m(全高4.2mの肩口より少し上)
   const eye = [
     M.x - fwdMO[0] * back + rightMO[0] * lat * sideSign,
     hgt,
     M.y - fwdMO[2] * back + rightMO[2] * lat * sideSign,
   ];
-  return { eye, target: [O.x, 3 * MECH_SCALE, O.y] };
+  return { eye, target: [O.x, 3 * MECH_SCALE + (O.elev || 0), O.y] };
 }
 function shotPOV(a, b, povSide, tSec) {
   // コックピットPOV: 頭部/胴上部=コクピット高(4.0*MECH_SCALE)から相手を見据える一人称。
@@ -2715,12 +2782,13 @@ function shotPOV(a, b, povSide, tSec) {
   const sway = (Math.sin(t * 1.9) + 0.5 * Math.sin(t * 3.1 + 1.3)) * 0.22 * MECH_SCALE;
   const bob = Math.sin(t * 3.8) * 0.10 * MECH_SCALE;
   const ahead = 2.2 * MECH_SCALE;
+  // v5: コクピット高も足場の標高込み(瓦礫の上の機体で撮ると、地上高のままでは土の中からの一人称になる)
   const eye = [
     src.x + fwd[0] * ahead + rgt[0] * sway,
-    4.0 * MECH_SCALE + bob,
+    4.0 * MECH_SCALE + (src.elev || 0) + bob,
     src.y + fwd[2] * ahead + rgt[2] * sway,
   ];
-  return { eye, target: [tgt.x, 3 * MECH_SCALE, tgt.y], povIdx: povSide > 0 ? 0 : 1 };
+  return { eye, target: [tgt.x, 3 * MECH_SCALE + (tgt.elev || 0), tgt.y], povIdx: povSide > 0 ? 0 : 1 };
 }
 function shotProjectileFollow(shot, localT, dur) {
   // 弾追跡: 弾の背後から着弾まで追う速い画(全弾種対応。beamは光条の走りを駆け抜ける)。
@@ -2737,10 +2805,12 @@ function shotProjectileFollow(shot, localT, dur) {
   return { eye, target: add(pos, scaleV(dir, 8)) };
 }
 function shotMeleeClose(c) {
+  // v5: 白兵至近は eye が 0.84m まで下がる=足場の標高を無視すると、瓦礫の上の殴り合いで
+  // カメラが塚の中に埋まる。高いほうの足場に合わせて持ち上げる(低いほうに合わせると埋まる)。
   const d = 9 * MECH_SCALE;
   const ang = c.axisAng + Math.PI / 2 + c.angleOff * 0.4;
-  const eye = [c.midx + Math.cos(ang) * d, 1.4 * MECH_SCALE, c.midz + Math.sin(ang) * d];
-  return { eye, target: [c.midx, 2.6 * MECH_SCALE, c.midz] };
+  const eye = [c.midx + Math.cos(ang) * d, 1.4 * MECH_SCALE + c.midElev, c.midz + Math.sin(ang) * d];
+  return { eye, target: [c.midx, 2.6 * MECH_SCALE + c.midElev, c.midz] };
 }
 // 弾追跡の対象選定: ショット開始時に scene.shots からハッシュで1発選び、その識別子
 // (kind+着弾先)を camSt に控えて以後のフレームで同じ弾を追い続ける。弾が消えた(着弾済み)なら
@@ -2837,6 +2907,21 @@ export function computeAutoCamera(scene, tSec, aspect, camSt, dt, reset) {
   const midx = (a.x + b.x) / 2, midz = (a.y + b.y) / 2;
   const axisAng = Math.atan2(b.y - a.y, b.x - a.x);
 
+  // 新規試合/巻き戻し(reset)では**カメラの記憶をすべて捨てる**。camSt はレンダラ1インスタンスに
+  // 1個=ページ寿命で共有されるので、消し忘れた状態はそのまま次の試合へ持ち越される。とりわけ
+  // **amLock(余韻カメラのラッチ)が残ると、2戦目の決着で初回フレームからいきなり1戦目の座標へ
+  // 固定され、敗者も勝者も画面に入らない**(=「決着後の周回が行われない事がある」の再現条件は
+  // 「同一セッションの2戦目以降」。1戦目だけを見ていると再現しない。レビュー指摘 2026-08-01)。
+  // seed も落とす: 残すと2戦目のショット割りが1戦目の初期位置由来のシードで決まり、
+  // 「同じリプレイコードなら同じ画」が何戦目に見たかで崩れる。
+  if (reset) {
+    camSt.seed = null; camSt.distEMA = null;
+    camSt.amLock = null; camSt.amAng = null;
+    camSt.tripodIdx = -1; camSt.tripodEye = null;
+    camSt.projIdx = -1; camSt.projSig = null;
+    camSt.lineSide = null; camSt.povIdx = -1; camSt.povOk = false;   // ⑥ イマジナリーラインの基準側とPOVラッチも取り直す
+  }
+
   // シードは初回フレームの機体位置から一度だけ確定する(毎フレーム再計算すると機体移動で
   // ショット割りが揺れて画がバタつく)。以後の全ハッシュ選択はこの固定値に基づく決定論。
   if (camSt.seed == null) camSt.seed = hash(a.x * 0.021 + b.y * 0.019 + 11.3) * 1000;
@@ -2845,8 +2930,7 @@ export function computeAutoCamera(scene, tSec, aspect, camSt, dt, reset) {
   // 機体間距離のEMA(τ≈0.8s): 間合いの脈動(ストレイフ/ノックバック)がフレーミング距離に
   // 直結してズームがポンピングするのを防ぐ。フレーミングの「下限(基準画角)」にのみ使い、
   // 包含のハード検査(containEye)は生の機体位置で行う=最終権威。
-  if (reset) { camSt.lineSide = null; camSt.povIdx = -1; }   // ⑥ 新規試合/巻き戻しでイマジナリーラインの基準側とPOVラッチを取り直す
-  if (reset || camSt.distEMA == null) camSt.distEMA = distRaw;
+  if (camSt.distEMA == null) camSt.distEMA = distRaw;
   else camSt.distEMA += (distRaw - camSt.distEMA) * (1 - Math.exp(-dt / 0.8));
   const dist2d = camSt.distEMA;
 
@@ -2867,9 +2951,10 @@ export function computeAutoCamera(scene, tSec, aspect, camSt, dt, reset) {
     // 大きく展開する。方位はシードから固定(敗者は静止しているのでeyeは安定)。
     const ang = hash(seed * 1.31 + 6.6) * Math.PI * 2;
     const d = 13 - 3 * easeOutCubic(clamp01(dying.deadAge / 3.0));
-    const tgtY = (2.6 - 1.4 * easeOutCubic(clamp01(dying.deadAge / 1.4))) * MECH_SCALE;
+    const tgtY = (2.6 - 1.4 * easeOutCubic(clamp01(dying.deadAge / 1.4))) * MECH_SCALE + (dying.elev || 0);
     const F = mechFocus(dying, dying.mesh);   // 横倒しした胴の実中心を追う(feet基準ではズレる)
-    const eye = [F.x + Math.cos(ang) * d, 1.7 * MECH_SCALE, F.z + Math.sin(ang) * d];
+    // 目線高さは敗者の足場から測る(v5: 瓦礫の上で崩れ落ちると、地上高のままではカメラが塚の中)
+    const eye = [F.x + Math.cos(ang) * d, 1.7 * MECH_SCALE + (dying.elev || 0), F.z + Math.sin(ang) * d];
     const target = [F.x, tgtY, F.z];
     return { eye, target, showMarkers: false, shotIdx: -2000, tau: 0.6, contain: false };
   }
@@ -2889,11 +2974,22 @@ export function computeAutoCamera(scene, tSec, aspect, camSt, dt, reset) {
     let eye, target;
     if (loser === 0 || loser === 1) {
       // 敗者を画面中心に。勝者-敗者距離(EMA)に応じてカメラ距離を縮める=勝者が近づくほど寄る。
-      // 勝者の旋回(距離~10.5mで一定)に入ると camDist≈8.8m(下限9×MECH_SCALE=5.4m)の
-      // 近接の画で安定し、旋回する勝者が画面を大きく横切る。
+      // ただし**旋回半径より内側に入ってはいけない**: 勝者は敗者の周りを半径≈10.4m(game.js の R2=23
+      // ×WORLD_SCALE)で回るので、camDist がそれと同程度だとカメラが旋回円の上に乗り、勝者は周回の
+      // 大半を画面外(真横〜背後)で過ごす。ラッチ(amLock)はその構図を固定してしまうため、
+      // 「決着後の周回が行われない」ように見えていた(実測 2026-08-01: camDist 10.3m / 旋回半径 10.4m)。
+      // 画面内に収まる条件は asin(旋回半径/camDist) ≦ 水平半画角なので、係数は **aspect から出す**
+      // (16:9 で 1.69。3Dタブがほぼ正方形になる非コックピット幅では 2.2 まで開く)。1.15 は安全余裕
+      // =狙点が胴中心のぶん実効半径が旋回半径より大きいことへの手当て。上限2.2は縦画面のため:
+      // 幾何の要求どおり(縦画面で4倍超)引くと敗者が豆粒になり、余韻の主役が読めなくなる。
+      // 下限は**機体間距離ではなく旋回半径そのもの**から出すこと: 距離比例にすると、撃破の無い決着
+      // (判定勝ち・降参)では決着カットの猶予が無いぶん「決着間合いのまま」初回フレームでラッチし、
+      // カメラが旋回円の内側に取り残される(実測 2026-08-01: 判定勝ち4件中1件が camDist 10.2m<半径10.35m)。
+      // 遠方(接近中)は従来どおり 3.5+dist/2 が効く。
       const L = mechs[loser] || a;
       const F = mechFocus(L, L.mesh);   // 横倒しした胴の実中心を画面中心に(feet基準だと機体が中央から外れる)
-      const camDist = Math.max(9 * MECH_SCALE, 3.5 + dist2d * 0.5);
+      const orbitK = Math.min(2.2, 1.15 / Math.sin(Math.atan(aspect * Math.tan(FOV_Y / 2))));
+      const camDist = Math.max(9 * MECH_SCALE, 3.5 + dist2d * 0.5, AFTERMATH_ORBIT_R * orbitK);
       const h = 3 * MECH_SCALE + camDist * 0.22;
       eye = [F.x + Math.cos(ang) * camDist, h, F.z + Math.sin(ang) * camDist];
       target = [F.x, F.y, F.z]; // 横たわった敗者の胴中心の高さに合わせる
@@ -2935,6 +3031,7 @@ export function computeAutoCamera(scene, tSec, aspect, camSt, dt, reset) {
 
   const baseCtx = {
     midx, midz, axisAng, dist2d, aspect, side, angleOff, heightOff,
+    midElev: Math.max(a.elev || 0, b.elev || 0),   // v5: 至近ショットの床(高いほうの足場に合わせる)
     localT: sch.localT, dur: sch.dur, dollyDir, craneUp, orbitDir,
     tripodEye: null,
   };

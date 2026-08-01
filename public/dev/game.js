@@ -1,12 +1,15 @@
 // 鋼機工廠 — 統合(親)。状態機械・戦闘再生・メタ進行・ネット対戦。
 import { PARTS, COSMETICS, deriveStats, defaultBuild, getPart, codename, buildCost } from './parts.js';
 import { simulate, FIELDS, getField, losBlockedBy } from './sim.js';
+// 余韻演出だけが使う(シムが計算していない位置の足元の標高)。描画側の都合なので sim 経由にしない。
+// リプレイでも res.field(凍結バンドル側の戦場)を引数で渡すので、形はその試合のものになる。
+import { footYAt } from './fields.js';
 import { encodeReplay, decodeReplay, loadSimBundle } from './replay.js';
 import { narrate, VOICE_ROLES } from './voice.js';
 import { LINES } from './voice-lines.js';
 import { createUI, makeLogLine } from './ui.js';
 import { createRadar } from './radar.js';
-import { mechMesh, mechFocus, decorLiftAt } from './r3d.js';
+import { mechMesh, mechFocus, decorLiftAt, AFTERMATH_ORBIT_R_SIM } from './r3d.js';
 import { createR3DThree } from './r3d-three.js';
 
 export const CAMPAIGN = [
@@ -85,7 +88,7 @@ const dbg = (type, extra) => __promoDbg.events.push(Object.assign({ t: performan
 // WebGL 初期化に失敗した端末では 3D 描画だけ無効化して劣化継続(組立/ログ/レーダー等の UI は生かす)。
 function makeR3D(canvas) {
   try { return createR3DThree(canvas); }
-  catch (e) { console.warn('[r3d] Three(WebGL) init 失敗 — 3D描画を無効化', e); return { render() {} }; }
+  catch (e) { console.warn('[r3d] Three(WebGL) init 失敗 — 3D描画を無効化', e); return { render() {}, resetCamera() {} }; }
 }
 
 const PROD_API = 'https://fable-kouki.d3j.workers.dev';
@@ -630,6 +633,10 @@ function startBattle(myBuild, foeBuild, seed, ctx) {
           enemyRef: ctx.mode === 'campaign' ? 'c' + ctx.rank + ctx.idx
             : ctx.mode === 'daily' ? 'd' + todayStr() : null }),
     replayArgs: [myBuild, foeBuild, seed, ctx] };
+  // カメラの記憶(シード・余韻カメラのラッチ等)を明示的に捨てる。director 側も時計の逆行で reset するが、
+  // **レーダー/実況タブのまま試合を始めると3Dが1フレームも回らず、逆行を見逃したまま次の試合へ入る**
+  // (前の試合のラッチが残り、決着した瞬間に前試合の座標へカメラが固定される)。開始点で断ち切る。
+  if (r3d.resetCamera) r3d.resetCamera();
   els.logview.textContent = '';   // 全行クリア(div でも有効)
   // 右ペイン: TGT-A(機体名) / TGT-B(機体名) — 機械的呼称+実名の併記
   if (els.hud.tgtSubA) els.hud.tgtSubA.textContent = `(${myName})`;
@@ -714,6 +721,75 @@ function frame(now) {
   const res = battle.res, t = Math.min(battle.t, res.duration);
   const tFx = battle.t;   // エフェクト・実況・死亡アニメ用の非クランプ時計
   const mst = interp(res, t);
+  // 余韻演出: 勝者は「終了時の位置から敗者へ近づき、十分近づいたら周回」(攻撃なし)。敗者は静止。
+  // **足元の高さ・歩容・弾道より前に置くこと**: ここは interp が返した凍結位置を勝者ぶんだけ
+  // 上書きする=以降のブロック(groundLift / walk / moveLocal / prevPos)が「勝者の実位置」を見る。
+  // 後ろに置いていた頃は、勝者の足場標高が決着時の座標のまま凍り、塚際で決着すると勝者が埋まった/
+  // 浮いたまま一周していた(人間判断 2026-08-01 で今回直す)。
+  if (battle.done && battle.summary && battle.summary.myWin != null) {
+    const wIdx = battle.summary.myWin ? 0 : 1, lIdx = 1 - wIdx;
+    // 旋回半径(sim単位)。3D描画は WORLD_SCALE≈0.45 で縮むため、視覚で約10mになるよう補正
+    // (後演出のみ・バランス無関係)。**正本は r3d.js**=余韻カメラの距離下限が同じ数を見る。
+    const R2 = AFTERMATH_ORBIT_R_SIM;
+    const dt2 = battle.paused ? 0 : dtReal * sp;   // 再生倍速も効く
+    // 周回/接近の中心は「横倒しした敗者の胴中心」(feet基準だと機体が画面中央から外れる)。
+    // v5: elev を渡さないと、瓦礫の上で撃破されたとき狙点だけ地面に残る。
+    // 撃破決着でないとき(時間切れ判定・降参)は敗者が**立ったまま**描かれるので、横倒しの姿勢を
+    // 渡してはいけない=余韻カメラ(r3d.js aftermath は実際の生死で mechFocus する)と中心が食い違う。
+    const lDead = !!battle.loserDestroyed;
+    const LF = mechFocus({ x: mst[lIdx].x, y: mst[lIdx].y, h: mst[lIdx].h,
+                           alive: !lDead, deadAge: lDead ? 99 : null,
+                           elev: battle.groundLift[lIdx] }, battle.meshes[lIdx]);
+    const lcx = LF.x, lcy = LF.z;
+    if (!battle.post) {
+      // 接近速度は**開始時の距離から一度だけ**決める(APPROACH_SEC で到着)。毎フレーム dd から出すと
+      // 近づくほど遅くなり、実測 p50=249単位で12.5s・最遠720単位で21s かかっていた(コメントの「8秒」は
+      // 実現していなかった)。周回に入る前に画面を閉じられる=「決着後の周回が行われない」の正体。
+      const dd0 = Math.max(0, Math.hypot(lcx - mst[wIdx].x, lcy - mst[wIdx].y) - R2);
+      const APPROACH_SEC = 5;
+      battle.post = { x: mst[wIdx].x, y: mst[wIdx].y, mode: 'approach', ang: 0,
+                      spd: Math.max(14, Math.min(46, dd0 / APPROACH_SEC)) };   // 上限=標準二脚top(31)の1.5倍
+    }
+    const P = battle.post;
+    const ddx = lcx - P.x, ddy = lcy - P.y, dd = Math.hypot(ddx, ddy) || 1;
+    const SPD = P.spd;
+    if (P.mode === 'approach') {
+      if (dd > R2 + 0.5) {
+        // 行き過ぎ防止: 1フレームの歩幅が残り距離を超えるなら、その分だけ進める(高速接近時のオーバーシュート)
+        const step = Math.min(SPD * dt2, dd - R2);
+        P.x += ddx / dd * step; P.y += ddy / dd * step;
+        mst[wIdx].h = Math.atan2(ddy, ddx);          // 敗者の方を向いて歩く
+      } else {
+        P.mode = 'orbit';
+        P.ang = Math.atan2(P.y - lcy, P.x - lcx);   // 今いる角度から滑らかに周回へ
+        P.r = dd;                                    // 半径も**今いる距離から**始める(下の注記)
+      }
+    }
+    if (P.mode === 'orbit') {
+      // 半径を R2 へ**寄せながら**回る。いきなり `lcx + cos*R2` へ射影すると、決着時点で既に
+      // 近い(dd ≤ R2+0.5=全決着の23.5%・最大21.8単位)場合に勝者が1フレームで旋回円までワープする。
+      // 歩容が位置差分から出るようになった今は、それが「脚が0.8周期ぶん飛ぶ」として画に出る。
+      const dr = R2 - P.r;
+      P.r += (dr < 0 ? -1 : 1) * Math.min(Math.abs(dr), SPD * dt2);
+      // 角速度は半径で割る=対地の周回速度(0.55×R2≈12.65)を半径によらず一定に保つ
+      P.ang += 0.55 * R2 / Math.max(4, P.r) * dt2;
+      P.x = lcx + Math.cos(P.ang) * P.r;
+      P.y = lcy + Math.sin(P.ang) * P.r;
+      mst[wIdx].h = P.ang + Math.PI / 2;             // 進行方向を向いて周回
+    }
+    mst[wIdx].x = P.x; mst[wIdx].y = P.y;
+    // 足元の標高も勝者の**今の位置**で取り直す。cy は interp が返す凍結値=シムが最後に計算した
+    // 決着時の座標のものなので、そのままだと塚際で決着したとき勝者が埋まった/浮いたまま一周する。
+    // **脚種を渡すこと**: hover は乗りも沈みもしない(渡さないと、試合中は塚を突っ切っていた同じ機体が
+    // 余韻でだけ天端に乗り上げる)。泥の沈み込みも同じ式で拾うので、沈んだまま決着しても浮き上がらない。
+    mst[wIdx].cy = footYAt(res.field, P.x, P.y, battle.meshes[wIdx].legsKind);
+    // 歩行位相(walk)と移動方向(moveLocal)は**下の共通ブロックに任せる**。このブロックが前に出た
+    // ことで勝者の移動が prevPos との差分に現れるようになり、実対地速度がそのまま歩容に乗る
+    // (以前はここが後ろにあって差分が0=脚が止まるため、速度を手で与えていた。手で与える版は
+    // 接近速度のまま周回に入ってフットスケートする穴があった)。
+    // くすぶる残骸の煙は r3d(poseMechFaces)側で横倒しした胴の実位置に出す(mech.smolder)。
+  }
+
   // v5: 足元の地面高。cy=シムが知る足場(瓦礫の天端+ / 泥の沈み込み−)、decorLiftAt=装飾の踏み面
   // (縁石・折れた街灯・コンクリ塊。シムは知らない=乗って降りるだけで進路も速度も変わらない)。
   // **両者は「地面の高さ」なので足し算ではなく高いほう**。装飾が無い所(dl=0)では泥の沈み込みを
@@ -829,43 +905,6 @@ function frame(now) {
     ml.mag = Math.min(1, Math.hypot(ml.fwd, ml.lat));
   }
   battle.prevPos = mst.map(m2 => ({ x: m2.x, y: m2.y }));
-  // 余韻演出: 勝者は「終了時の位置から敗者へ近づき、十分近づいたら周回」(攻撃なし)。敗者は静止
-  if (battle.done && battle.summary && battle.summary.myWin != null) {
-    const wIdx = battle.summary.myWin ? 0 : 1, lIdx = 1 - wIdx;
-    if (!battle.post) battle.post = { x: mst[wIdx].x, y: mst[wIdx].y, mode: 'approach', ang: 0 };
-    const P = battle.post, R2 = 23;   // 旋回半径(sim単位)。3D描画は WORLD_SCALE≈0.45 で縮むため、視覚で約10mになるよう補正(後演出のみ・バランス無関係)
-    const dt2 = battle.paused ? 0 : dtReal * sp;   // 再生倍速も効く
-    // 周回/接近の中心は「横倒しした敗者の胴中心」(feet基準だと機体が画面中央から外れる)。
-    // v5: elev を渡さないと、瓦礫の上で撃破されたとき狙点だけ地面に残る
-    const LF = mechFocus({ x: mst[lIdx].x, y: mst[lIdx].y, h: mst[lIdx].h, alive: false, deadAge: 99,
-                           elev: battle.groundLift[lIdx] }, battle.meshes[lIdx]);
-    const lcx = LF.x, lcy = LF.z;
-    const ddx = lcx - P.x, ddy = lcy - P.y, dd = Math.hypot(ddx, ddy) || 1;
-    const SPD = Math.max(14, dd / 8);              // 遠距離決着でも8秒程度で到着
-    if (P.mode === 'approach') {
-      if (dd > R2 + 3) {
-        P.x += ddx / dd * SPD * dt2; P.y += ddy / dd * SPD * dt2;
-        mst[wIdx].h = Math.atan2(ddy, ddx);          // 敗者の方を向いて歩く
-      } else {
-        P.mode = 'orbit';
-        P.ang = Math.atan2(P.y - lcy, P.x - lcx);   // 今いる角度から滑らかに周回へ
-      }
-    }
-    if (P.mode === 'orbit') {
-      P.ang += 0.55 * dt2;
-      P.x = lcx + Math.cos(P.ang) * R2;
-      P.y = lcy + Math.sin(P.ang) * R2;
-      mst[wIdx].h = P.ang + Math.PI / 2;             // 進行方向を向いて周回
-    }
-    mst[wIdx].x = P.x; mst[wIdx].y = P.y;
-    if (dt2 > 0) battle.walk[wIdx] += dt2 * SPD * 0.22;   // 歩行モーション継続
-    // 決着後は mst が毎フレーム凍結値へ再生成される=勝者の移動(P)が位置差分に出ず moveLocal が0に
-    // なって脚が止まる(②の連携の副作用)。勝者は常に進行方向を向いて歩くので前進として明示的に与える。
-    const wspd = P.mode === 'orbit' ? 0.55 * R2 : SPD;
-    const wf = Math.min(1, wspd / MV_REF);
-    battle.moveLocal[wIdx].fwd = wf; battle.moveLocal[wIdx].lat = 0; battle.moveLocal[wIdx].mag = wf;
-    // くすぶる残骸の煙は r3d(poseMechFaces)側で横倒しした胴の実位置に出す(mech.smolder)。
-  }
   const aliveArr = [resAlive(res, t, 0), resAlive(res, t, 1)];
   // HUD
   const st0 = battle.stA, st1 = battle.stB;
