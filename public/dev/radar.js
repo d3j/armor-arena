@@ -246,6 +246,17 @@ export function createRadar(canvas) {
         ctx.fillStyle = 'rgba(90,70,40,0.35)';
         ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
+      } else if (o.kind === 'rubble') {
+        // 踏破可能=止まらない地形。壁の実線リングと紛れないよう破線の等高線ひとつで表す。
+        // 高い足場(h≥2=露出ペナルティが効く)だけ内側にもう一重=「乗ると晒される場所」。
+        if (o.alive === false) return;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(190,205,150,0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI * 2); ctx.stroke();
+        if ((o.h || 0) >= 2) { ctx.beginPath(); ctx.arc(px, py, pr * 0.55, 0, Math.PI * 2); ctx.stroke(); }
+        ctx.restore();
       } else if (o.kind === 'spike') {
         if (o.alive === false) return;
         ctx.save();

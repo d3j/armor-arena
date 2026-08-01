@@ -29,6 +29,13 @@
     { fid: 'shigai', at: [500, 180], dist: 60, h: 14, th: 'training' },   // 崩落瓦礫と鉄筋
     { fid: 'shigai', at: [500, 500], dist: 300, h: 120, th: 'arena' },    // 交差点と街の全景(夜)
     { fid: 'shigai', at: [400, 400], dist: 150, h: 40, th: 'training', dead: true },  // 全壊ビル
+    // v5 小障害物(rubble)の見え。機体全高は 4.24 ワールド単位=画面内の高さの物差しに使う。
+    { fid: 'shigai', at: [500, 320], dist: 45, h: 10, th: 'training' },   // 大通りを塞ぐ崩落塊(h=3.0)
+    { fid: 'shigai', at: [454, 268], dist: 30, h: 8, th: 'training' },    // 焼けた廃車(昇格済み)
+    { fid: 'shigai', at: [429, 240], dist: 40, h: 9, th: 'training' },    // 歩道の段差+折れた街灯
+    { fid: 'shigai', at: [572, 572], dist: 40, h: 9, th: 'arena' },       // 倒れた信号機(夜)
+    { fid: 'plain',  at: [500, 500], dist: 70, h: 16, th: 'training' },   // 演習平原 中央の塚(h=3.2)
+    { fid: 'haikyo', at: [500, 500], dist: 60, h: 14, th: 'training' },   // 廃棄工廠 廃材の山(h=2.6)
   ];
 
   document.getElementById('freecam')?.remove();
@@ -47,6 +54,7 @@
     const tgt = P(s.at[0], s.at[1]);
     const scaled = field.obstacles.map((o, i) => ({
       kind: o.kind, x: C + (o.x - C) * S, y: C + (o.y - C) * S, r: o.r * S, hp0: o.hp, idx: i,
+      h: o.h || 0, deco: o.deco,   // v5: 瓦礫の標高と見た目ヒント(高さは実座標のまま=縮小しない)
       alive: !(s.dead && o.kind === 'wall' && o.hp != null),
       hpFrac: s.dead && o.kind === 'wall' ? 0 : 1,
     }));

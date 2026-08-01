@@ -918,8 +918,9 @@ export function mechMesh(build, PARTS, color) {
 export function mechFocus(mech, mesh) {
   const x = mech.x || 0, z = mech.y || 0, h = mech.h || 0;
   const torsoCy = (mesh && mesh.torsoCy) || 2.7 * MECH_SCALE;
+  const elev = mech.elev || 0;   // v5: 足場の標高(カメラの狙点も一緒に上げないと高所の機体が画面下に落ちる)
   if (mech.alive !== false || mech.deadAge == null) {
-    return { x, y: GROUND_Y + torsoCy, z };
+    return { x, y: GROUND_Y + elev + torsoCy, z };
   }
   const fc = fallCurve(mech.deadAge);
   const idxHash = hash(x * 0.013 + z * 0.017);
@@ -929,7 +930,7 @@ export function mechFocus(mech, mesh) {
   const c = Math.cos(rockAngle), s = Math.sin(rockAngle);
   const bx = -torsoCy * s, by = torsoCy * c;   // Z軸回転後の機体ローカルx,y
   const right3 = [Math.sin(h), 0, -Math.cos(h)];
-  const originY = GROUND_Y + fc.roll * 1.6 * MECH_SCALE;
+  const originY = GROUND_Y + elev + fc.roll * 1.6 * MECH_SCALE;
   return { x: x + right3[0] * bx, y: originY + by, z: z + right3[2] * bx };
 }
 
@@ -1092,7 +1093,9 @@ export function computeMechPose(mech, tSec) {
   const right3 = [Math.sin(h), 0, -Math.cos(h)];
   const idxHash = hash((mech.x || 0) * 0.013 + (mech.y || 0) * 0.017);
 
-  let originY = GROUND_Y;
+  // v5: mech.elev=足場の標高(m。シムの climbH をそのまま渡す)。IK は origin から下へ解くので、
+  // origin を上げるだけで脚も接地点も一緒に上がる=瓦礫の天端に立つ。未指定なら従来どおり地面。
+  let originY = GROUND_Y + (mech.elev || 0);
   if (mesh.hover && alive) originY += mesh.hover.baseLift + Math.sin(tSec * 1.6) * mesh.hover.bobAmp;
 
   let rockAngle = 0;
@@ -1979,8 +1982,51 @@ export function obstacleWorldFaces(scene, out) {
         const tip = prismShape([cx, hgt - 0.16, cz], AXIS_Y, 0.16, 0, br * 0.5, 6);
         tip.faces.forEach((f) => out.push({ verts: f.map((vi) => tip.verts[vi]), color: '#ff5a2a', alpha: 1, emissive: true }));
       }
+    } else if (o.kind === 'rubble') {
+      rubbleFaces(o, out);
     }
   });
+}
+
+// v5: 踏破可能な小障害物(rubble)。「止まらないが乗る」ものなので、危険色ではなく
+// **天端が平らな土盛り**として描く=形そのものが「ここに立てる」の記号。高さは o.h(m≒描画単位)。
+// 市街でも同じ関数を使う(コンクリ塊か土塊かの差は tex とテーマ色で出る=urbanObstacleFaces から呼ぶ)。
+function rubbleFaces(o, out, opt) {
+  if (o.alive === false) return;
+  const urban = !!(opt && opt.urban);
+  const seed = o.x * 0.41 + o.y * 0.23;
+  const h = o.h > 0 ? o.h : 0.6;
+  const tex = urban ? 'concrete' : 'rock';
+  const baseCol = urban ? '#6a665e' : '#5f5a51';
+  // 土台: 天端 62% のテーパー(裾が広く天端が平ら=登れる形)。縁を乱して自然物にする。
+  // chunky=割れた舗石(角張った5面+強い乱れ)。丸い8面の塚だと路上の「石ころ」に見えてしまい、
+  // 「崩れた歩道」には読めない(実機確認 2026-08-01)。
+  const chunky = !!(opt && opt.chunky);
+  const sides = chunky ? 5 : 8;
+  const body = prismShape([o.x, h / 2, o.y], AXIS_Y, h / 2, o.r * (chunky ? 0.8 : 0.62), o.r,
+    sides, { jitter: (i) => (hash(seed + i * 3.3) - 0.5) * o.r * (chunky ? 0.5 : 0.24) });
+  body.faces.forEach((f) => out.push({ verts: f.map((vi) => body.verts[vi]), color: baseCol, alpha: 1, tex }));
+  // 裾に散る岩塊/コンクリ塊(土台だけだと「置いた円柱」に見える)
+  const n = 4 + Math.floor(hash(seed * 1.9) * 4);
+  for (let i = 0; i < n; i++) {
+    const hn = hash(seed + i * 7.7);
+    const a = hn * Math.PI * 2, rad = o.r * (0.72 + hash(hn * 3.1) * 0.34);
+    const cr = o.r * (0.1 + hash(hn * 5.3) * 0.12);
+    const ch = cr * (0.7 + hash(hn * 2.7) * 0.9);
+    const ck = prismShape([o.x + Math.cos(a) * rad, ch / 2, o.y + Math.sin(a) * rad], AXIS_Y, ch / 2,
+      cr * 0.6, cr, 5, { jitter: (k) => (hash(hn * 11 + k) - 0.5) * cr * 0.5 });
+    ck.faces.forEach((f) => out.push({ verts: f.map((vi) => ck.verts[vi]), color: mixColor(baseCol, '#2a2722', hash(hn * 13) * 0.4), alpha: 1, tex }));
+  }
+  // 天端の縁取り。機体の腰より高い足場(=露出ペナルティが効く高さ)にだけ付け、
+  // 「ここに乗ると見晴らしと引き換えに晒される」を観戦者が形で読めるようにする。
+  if (h >= 2) {
+    const rt = o.r * 0.62, rv = [];
+    for (let i = 0; i < sides; i++) {
+      const a = (i / sides) * Math.PI * 2;
+      rv.push([o.x + Math.cos(a) * rt, h + 0.06, o.y + Math.sin(a) * rt]);
+    }
+    for (let i = 0; i < sides; i++) out.push({ isLine: true, verts: [rv[i], rv[(i + 1) % sides]], color: 'rgba(196,206,214,0.42)' });
+  }
 }
 
 // ==================== 市街戦(shigai)の障害物 ====================
@@ -2130,13 +2176,58 @@ function urbanObstacleFaces(o, out) {
         tip.faces.forEach((f) => out.push({ verts: f.map((vi) => tip.verts[vi]), color: '#ff6a2a', alpha: 1, emissive: true }));
       }
     }
+  } else if (o.kind === 'rubble') {
+    // 同じ判定円を街の語彙で描き分ける(o.deco は render-only のヒント。シムは読まない)。
+    if (o.alive === false) return;
+    if (o.deco === 'car') { wreckFaces(o, out); return; }
+    rubbleFaces(o, out, { urban: true, chunky: o.deco === 'curb' });
+    if (o.deco === 'slab') {
+      // 崩落塊には折れた鉄筋を数本。踏めば痛い spike とは違い「乗れる」ものなので、
+      // 発光する鋭端は付けない(危険の記号を混ぜると意味が読めなくなる)。
+      for (let k = 0; k < 4; k++) {
+        const hn = hash(o.x * 0.53 + o.y * 0.29 + k * 6.1);
+        const a = hn * Math.PI * 2, rad = o.r * 0.5 * hash(hn * 3.7);
+        const bx = o.x + Math.cos(a) * rad, bz = o.y + Math.sin(a) * rad;
+        out.push({ isLine: true, verts: [[bx, o.h * 0.6, bz], [bx + (hn - 0.5) * 3, o.h + 1.2 + hn * 1.4, bz + (hash(hn * 9) - 0.5) * 3]],
+                   color: 'rgba(150,92,50,0.9)' });
+      }
+    }
+  }
+}
+
+// 焼けた廃車(v5 で装飾からシムへ昇格。判定円 o.r の内側に収める=見た目が判定より外へ出ない)
+function wreckFaces(o, out) {
+  const seed = o.x * 0.61 + o.y * 0.37;
+  const rot = hash(seed) * Math.PI * 2;
+  const ca = Math.cos(rot), sa = Math.sin(rot);
+  const rotY = (v) => [o.x + (v[0] - o.x) * ca - (v[2] - o.y) * sa, v[1], o.y + (v[0] - o.x) * sa + (v[2] - o.y) * ca];
+  const L = o.r * 0.86, W = o.r * 0.4;
+  const body = boxShape(o.x, o.h * 0.42, o.y, L, o.h * 0.42, W);
+  body.faces.forEach((f) => out.push({ verts: f.map((vi) => rotY(body.verts[vi])), color: '#3a352f', alpha: 1, tex: 'concrete' }));
+  const cab = boxShape(o.x - L * 0.2, o.h * 0.78, o.y, L * 0.45, o.h * 0.36, W * 0.86);
+  cab.faces.forEach((f) => out.push({ verts: f.map((vi) => rotY(cab.verts[vi])), color: '#221f1c', alpha: 1, tex: 'concrete' }));
+  // 焼け跡(路面の黒い染み)。判定円いっぱいに広げて「ここが車の占める場所」を足元で示す。
+  out.push({
+    verts: [rotY([o.x - o.r, 0.09, o.y - o.r]), rotY([o.x + o.r, 0.09, o.y - o.r]),
+            rotY([o.x + o.r, 0.09, o.y + o.r]), rotY([o.x - o.r, 0.09, o.y + o.r])],
+    color: 'rgba(12,10,9,0.55)', alpha: 1, noCull: true, tex: 'asphalt',
+  });
+  // 転がったタイヤ/ドア(半数だけ。乱れの量に差を作る)
+  if (hash(seed * 3.1) > 0.5) {
+    const t = boxShape(o.x, o.h * 0.2, o.y + o.r * 0.72, L * 0.7, o.h * 0.2, W * 0.5);
+    t.faces.forEach((f) => out.push({ verts: f.map((vi) => rotY(t.verts[vi])), color: '#332f2a', alpha: 1, tex: 'concrete' }));
   }
 }
 
 // ==================== 戦場の装飾(render-only・当たり判定ゼロ) ====================
-// シムは一切知らない「街の家具」。市街戦の道路・縁石・区画線・街灯・信号・電線・廃車を
+// シムは一切知らない「街の家具」。市街戦の道路・区画線・横断歩道・折れた街灯/信号/電柱を
 // 実座標(シムのメートル)で組み、ここで WORLD_SCALE の縮小をかける(高さは描画単位のまま)。
 // 戦場id ごとに1回だけ生成してレンダラ側がキャッシュする(静的=毎フレーム再生成しない)。
+// **v5 の不変条件: 機体可動域に置く装飾は高さ2未満(機体全高4.24の膝下)に留める。**
+// それを超える実体が要るなら fields.js の障害物へ昇格させる。当たり判定ゼロのものが
+// 機体より高く立っていると、必ず「すり抜け」として観戦者の目に映るため。
+// 「可動域」= shapeClamp が機体を閉じ込める範囲(rect なら実座標 20..980)。場外の街並みと
+// 外周20mの縁は機体が到達しないので対象外(実測 2026-08-01: 20..980 内の装飾頂点で y>2 は0件)。
 export function fieldDecorFaces(fieldId, out) {
   if (fieldId !== 'shigai') return;
   const S = WORLD_SCALE;
@@ -2196,13 +2287,16 @@ export function fieldDecorFaces(fieldId, out) {
       quad(AV + s * (HALF + 8), AV + off - 3.2, AV + s * (HALF + 26), AV + off + 3.2, 0.15, 'rgba(226,224,210,0.6)', 1, 'concrete');
     }
   }
-  // --- 街灯(大通りに沿って交互。灯体は発光=夜テーマで街が生きて見える)---
+  // --- 街灯(v5: すべて根元から折れた姿にした)---
+  // 装飾は当たり判定ゼロなので、機体全高(4.24)を超える支柱を立てると必ず「すり抜け」が見える。
+  // 街灯/信号/電柱は円1個で表せず(細長い)、r≈1.2m は機体半径2.2mより小さいのでシムへも
+  // 昇格できない(fields.js の線引き)。ならば **膝下まで倒す** のが唯一嘘の出ない解で、
+  // しかも「崩落市街」の名にかなう。灯体は路面でまだ点いている=街が死にきっていない記号。
   const lampAt = (x, z, ax, az) => {
-    box(x, z, 1.2, 1.2, 0, 15, '#4c4f52', 'concrete');                   // 支柱
-    box(x + ax * 5, z + az * 5, ax ? 6 : 1.0, az ? 6 : 1.0, 14.0, 14.7, '#4c4f52', 'concrete');   // アーム
-    // 灯体は小さく抑える(大きい発光板は白飛びして「板が浮いている」ようにしか見えない)
-    box(x + ax * 10, z + az * 10, 2.6, 2.6, 13.7, 14.5, '#3a3d40', 'concrete');              // 笠
-    glow(x + ax * 10, z + az * 10, 13.55, 0.85, 0.22, 0.85, '#ffd79a');
+    box(x, z, 1.3, 1.3, 0, 1.6, '#4c4f52', 'concrete');                                        // 折れた根元
+    box(x + ax * 13, z + az * 13, ax ? 11 : 1.1, az ? 11 : 1.1, 0.2, 1.1, '#4c4f52', 'concrete'); // 路面に倒れた支柱
+    box(x + ax * 27, z + az * 27, 2.4, 2.4, 0.2, 1.0, '#3a3d40', 'concrete');                  // 割れた笠
+    glow(x + ax * 27, z + az * 27, 1.15, 0.7, 0.18, 0.7, '#ffd79a');
   };
   for (let z = 120; z < 900; z += 130) {
     lampAt(AV - HALF - 9, z, 1, 0);
@@ -2213,55 +2307,34 @@ export function fieldDecorFaces(fieldId, out) {
     lampAt(x, AV - HALF - 9, 0, 1);
     lampAt(x + 65, AV + HALF + 9, 0, -1);
   }
-  // --- 交差点の信号機(4隅。赤/黄/緑の3灯。赤だけ強く点く=止まった街)---
+  // --- 交差点の信号機(4隅。倒れて路面に転がり、3灯はまだ点いている)---
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     const px = AV + sx * (HALF + 10), pz = AV + sz * (HALF + 10);
-    box(px, pz, 1.2, 1.2, 0, 16, '#42454a', 'concrete');
-    box(px - sx * 4, pz, 5, 1.0, 14.6, 15.4, '#42454a', 'concrete');
-    box(px - sx * 8, pz, 2.6, 1.4, 11.8, 14.6, '#2c2f33', 'concrete');
+    box(px, pz, 1.3, 1.3, 0, 1.8, '#42454a', 'concrete');                       // 折れた根元
+    box(px - sx * 13, pz, 12, 1.1, 0.2, 1.2, '#42454a', 'concrete');            // 交差点へ倒れた支柱
+    box(px - sx * 28, pz, 2.8, 1.5, 0.2, 1.7, '#2c2f33', 'concrete');           // 路面の灯体
     ['#ff4a34', '#ffca4a', '#4affa0'].forEach((c, i) => {
-      glow(px - sx * 8, pz, 13.8 - i * 1.0, 0.42, 0.42, 0.2, c, 0, sz * 0.7);
+      glow(px - sx * 28, pz, 1.0, 0.4, 0.4, 0.2, c, sx * (i - 1) * 1.0, sz * 0.7);
     });
   }
-  // --- 電柱と電線(垂れたケーブル=空の情報量。裏通りの雰囲気)---
+  // --- 折れた電柱と路面を這うケーブル(v5: 立った支柱は残さない。理由は lampAt のコメント)---
   for (let i = 0; i < 7; i++) {
     const px = 120 + i * 120, pz = AV + HALF + 34;
-    box(px, pz, 1.5, 1.5, 0, 21, '#5a5148', 'concrete');
-    box(px, pz, 9, 1.1, 18.2, 19.0, '#5a5148', 'concrete');
+    box(px, pz, 1.6, 1.6, 0, 1.8, '#5a5148', 'concrete');                       // 折れた根元
+    box(px + 15, pz, 13, 1.2, 0.2, 1.3, '#5a5148', 'concrete');                 // 倒れた電柱
+    box(px + 28, pz, 1.2, 9, 0.2, 1.0, '#5a5148', 'concrete');                  // 腕木
     if (i > 0) {
       const qx = px - 120;
       for (const dz of [-6, 0, 6]) {
-        // 垂れ(たわみ)を3分割で近似
-        line(qx, 18.0, pz + dz, qx + 40, 15.6, pz + dz, 'rgba(24,22,20,0.85)');
-        line(qx + 40, 15.6, pz + dz, qx + 80, 15.6, pz + dz, 'rgba(24,22,20,0.85)');
-        line(qx + 80, 15.6, pz + dz, px, 18.0, pz + dz, 'rgba(24,22,20,0.85)');
+        // 断線して路面を這うケーブル(3分割で蛇行を付ける)
+        line(qx + 30, 0.9, pz + dz, qx + 60, 0.28, pz + dz + 7, 'rgba(24,22,20,0.85)');
+        line(qx + 60, 0.28, pz + dz + 7, qx + 92, 0.28, pz + dz - 5, 'rgba(24,22,20,0.85)');
+        line(qx + 92, 0.28, pz + dz - 5, px, 0.9, pz + dz, 'rgba(24,22,20,0.85)');
       }
     }
   }
-  // --- 焼けた廃車(大通り脇に散らす。シムは知らない=当たり判定なし)---
-  const WRECKS = [[AV - HALF + 16, 230, 0.5], [AV + HALF - 20, 640, 1.9], [270, AV - HALF + 14, 1.1],
-                  [730, AV + HALF - 16, 2.6], [AV + 26, 880, 0.3], [AV - 34, 130, 2.2]];
-  WRECKS.forEach(([x, z, rot], i) => {
-    const c = P(x, 0, z);
-    const L = 11 * S, W = 5 * S;
-    const ca = Math.cos(rot), sa = Math.sin(rot);
-    // 車体+キャビン(回転を頂点に直接かける)
-    const rotY = (v) => [c[0] + (v[0] - c[0]) * ca - (v[2] - c[2]) * sa, v[1], c[2] + (v[0] - c[0]) * sa + (v[2] - c[2]) * ca];
-    const body = boxShape(c[0], 1.5, c[2], L, 1.5, W);
-    body.faces.forEach((f) => out.push({ verts: f.map((vi) => rotY(body.verts[vi])), color: '#3a352f', alpha: 1, tex: 'concrete' }));
-    const cab = boxShape(c[0] - L * 0.2, 3.6, c[2], L * 0.45, 1.2, W * 0.86);
-    cab.faces.forEach((f) => out.push({ verts: f.map((vi) => rotY(cab.verts[vi])), color: '#221f1c', alpha: 1, tex: 'concrete' }));
-    // 焼け跡(下の黒い染み)
-    out.push({
-      verts: [rotY([c[0] - L * 1.4, 0.09, c[2] - W * 1.6]), rotY([c[0] + L * 1.4, 0.09, c[2] - W * 1.6]),
-              rotY([c[0] + L * 1.4, 0.09, c[2] + W * 1.6]), rotY([c[0] - L * 1.4, 0.09, c[2] + W * 1.6])],
-      color: 'rgba(12,10,9,0.55)', alpha: 1, noCull: true, tex: 'asphalt',
-    });
-    if (i % 2 === 0) {   // 半分は横倒し=戦場の乱れ
-      const t = boxShape(c[0], 0.7, c[2] + W * 2.2, L * 0.8, 0.7, W * 0.5);
-      t.faces.forEach((f) => out.push({ verts: f.map((vi) => rotY(t.verts[vi])), color: '#332f2a', alpha: 1, tex: 'concrete' }));
-    }
-  });
+  // --- 焼けた廃車は v5 でシムへ昇格した(fields.js の kind:'rubble'/deco:'car')。
+  //     ここで描くと二重になるので装飾側からは削除。座標の正本は fields.js。
   // --- 場外の街(戦域の外へ街を続ける。距離フォグに溶けて「街の中の戦場」に見える)---
   // 実座標で 0..1000 が戦域。その外側のリングに街区を置く=遊べないが必ず見える帯。
   quadTiled(AV - HALF, -260, AV + HALF, 40, 0.05, '#2b2e31', 'asphalt');

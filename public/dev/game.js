@@ -605,7 +605,8 @@ function startBattle(myBuild, foeBuild, seed, ctx) {
   const voice = narrate(res, { nameA: myName, nameB: ctx.enemyName || '敵機', seed,
     buildA: myBuild, buildB: foeBuild });   // St3: パーツ連動実況(ロードアウト紹介・脚種別回避/破損)
   battle = { res, evs, voice, ctx, t: 0, evIdx: 0, logIdx: 0,
-    obsState: res.field.obstacles.map((o, i2) => ({ kind: o.kind, x: o.x, y: o.y, r: o.r, alive: true, hpFrac: 1, hp0: o.hp, idx: i2 })),
+    obsState: res.field.obstacles.map((o, i2) => ({ kind: o.kind, x: o.x, y: o.y, r: o.r, h: o.h || 0,
+      deco: o.deco, alive: true, hpFrac: 1, hp0: o.hp, idx: i2 })),
     lastAtk: [null, null],
     _ba: myBuild, _bb: foeBuild,
     stA: (SIM ? SIM.deriveStats : deriveStats)(myBuild), stB: (SIM ? SIM.deriveStats : deriveStats)(foeBuild),
@@ -687,6 +688,9 @@ function interp(res, t) {
   return a.m.map((ma, i) => { const mb = b.m[i]; return {
     x: ma.x + (mb.x - ma.x) * k, y: ma.y + (mb.y - ma.y) * k,
     h: ma.h + ((((mb.h - ma.h) + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * k,
+    // cy=足場の標高(v5)。乗り降りを補間すると機体が段差を「滑らかに登る」ように見える
+    // (シムは0.05sで切り替わるが、描画で瞬間移動させると足が地面から飛ぶ)。
+    cy: (ma.cy || 0) + ((mb.cy || 0) - (ma.cy || 0)) * k,
     hp: ma.hp, en: ma.en }; });
 }
 
@@ -876,6 +880,7 @@ function frame(now) {
   }
   if (cockpit || (mode !== 'radar' && mode !== 'log')) {
     r3d.render({ mechs: mst.map((m2, i) => ({ mesh: battle.meshes[i], x: m2.x, y: m2.y, h: m2.h, hp: m2.hp, alive: aliveArr[i],
+        elev: m2.cy || 0,   // v5: 瓦礫の天端に立つ(標高は states の cy)
         deadAge: battle.diedAt[i] != null && tFx >= battle.diedAt[i] ? tFx - battle.diedAt[i] : undefined,
         flash01: Math.max(0, 1 - (tFx - battle.hitFlash[i]) / 0.14) * (battle.hitFlashMag[i] || 0),   // Ver6: 被弾フラッシュ
         walkPhase: battle.walk[i], attack: atk[i], occluded: i === 1 && occluded,

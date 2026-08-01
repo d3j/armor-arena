@@ -2,7 +2,7 @@
 // 対象は既定で開発版(public/dev)。KOUKI_DIR=../../public で本番にも当てられる。
 // 本体 harness.mjs は本番全体の健全性、こちらは「初期予算で組める構成の多様性と均衡」を見る。
 const DIR = process.env.KOUKI_DIR || '../../public/dev';
-const { simulate, TMAX } = await import(`${DIR}/sim.js`);
+const { simulate, TMAX, FIELDS } = await import(`${DIR}/sim.js`);
 const { PARTS, validateBuild, deriveStats, buildCost } = await import(`${DIR}/parts.js`);
 
 const BUDGET = 3000;
@@ -16,7 +16,10 @@ const B = {
   wheel:  { frame:'fr7', legs:'lg11', gen:'gn6', armor:'ar1', wpnR:'wp5',  wpnL:'wp14', ai:'ai1', color:'#7d6bb0', decal:'none', name:'' }, // 車輪×懐入り
   quad:   { frame:'fr2', legs:'lg8',  gen:'gn5', armor:'ar2', wpnR:'wp2',  wpnL:'wp1',  ai:'ai2', color:'#c2a35c', decal:'none', name:'' }, // 四脚×中距離砲戦
 };
-const FIELD_IDS = ['plain', 'sekichu', 'deitan', 'crater', 'haikyo'];
+// 戦場は対象ビルドが実際に持っているものから採る(harness.mjs と同じ理由。id を書き並べると
+// 対象に無い戦場が黙って plain へフォールバックし、カバレッジが嘘になる)。
+const FIELD_IDS = FIELDS.map(f => f.id);
+console.log(`対象 ${DIR} / 戦場 ${FIELD_IDS.length}種: ${FIELD_IDS.join(' ')}`);
 
 let fail = 0;
 const ok = (name, cond, extra = '') => { console.log((cond ? '  ✓ ' : '  ✗ ') + name + (extra ? `  ${extra}` : '')); if (!cond) fail++; };

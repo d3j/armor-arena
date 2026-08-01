@@ -6,8 +6,12 @@
 // Ver6: 弾速別回避(evadeMult=遅弾ほど躱しやすくビーム/レールは貫く)・爆発弾の割れダメージ
 //        (ミサイル回避でもsplash%)・パリィ後の反撃窓(riposte=次射に命中/威力ボーナス+踏み込み)。
 //        いずれも3段ロールのrng呼出数を変えない=決定論不変(掟3)。
+// Ver7(REPLAY_V=5): 小障害物 rubble=踏破可能。乗っている間だけ 速度×CLIMB_FACTOR[脚種] /
+//        回避↓ / 命中↑(標高 h による露出と見晴らし)。ハザード認知に「渡る/迂回」に次ぐ
+//        第3の選択肢「乗る」を足した。rng は一切増やしていない(判断は機体状態のみ)。
 import { deriveStats, bandMult, BANDS } from './parts.js';
-import { getField, MUD_FACTOR, SPIKE_DPS, losBlockedBy } from './fields.js';
+import { getField, MUD_FACTOR, SPIKE_DPS, losBlockedBy,
+         CLIMB_FACTOR, CLIMB_EVA_PENALTY, CLIMB_ACC_BONUS, climbExposure } from './fields.js';
 export { losBlockedBy } from './fields.js';
 export { validateBuild } from './parts.js';
 export { FIELDS, getField } from './fields.js';
@@ -67,6 +71,7 @@ function mkMech(build, x, y, h, pilot) {
            alive: true, walk: 0, strafePhase: 0, spdNow: 0, hzAcc: 0, hzT: 0, stance: 'hd',
            hzSide: 0, hzAt: -9, hzEscOn: false,       // ハザード迂回方向ラッチ+脱出ヒステリシス(振動防止)
            hzWant: 0, hzWantAt: -9,                   // 「踏む意欲」の慣性(判断の毎tick反転防止)
+           climbH: 0,                                 // Ver7: 今立っている足場の標高(m。0=地面)
            pd: [0, 0, 0, 0, 0],                       // 部位状態(armR,armL,legs,gen,body)
            curEngage: st.parts.ai.engage, cand: null, candIdx: 0,   // 適応交戦距離
            riposteUntil: -1,                          // Ver6: パリィ後の反撃窓の終了時刻
@@ -79,14 +84,18 @@ function pAcc(w, dist, shooter, slot) {
   if (bm.acc <= 0) return 0;
   // 照準補正(脚)は帯域倍率の内側: 帯域外では台座が安定していても照準系が追いつかない
   // (帯域内 bm.acc=1 では従来と同値。加算だと帯域外射撃がペナルティを踏み倒せてしまう)
-  return clamp((w.acc + shooter.st.aimBonus) * bm.acc + (shooter.pilotAcc || 0) + ARM_ACC[shooter.pd[slot]],
+  // Ver7: 高所からの射撃は見晴らしのぶん当てやすい(俯角+遮蔽の切れ目が見える)
+  return clamp((w.acc + shooter.st.aimBonus) * bm.acc + (shooter.pilotAcc || 0) + ARM_ACC[shooter.pd[slot]]
+               + CLIMB_ACC_BONUS * climbExposure(shooter.climbH),
                0.05, 0.97);
 }
 // 回避(目標側)ロール確率 — 今の移動速度でスケール(×0.6スケール後の基準36m/s)+脚損傷+弾速係数
+// Ver7: 瓦礫の上に居る間は露出が大きい(足場が悪く、シルエットが空に抜ける)= 躱せない。
 function pDodge(target, w) {
   const ms = 0.6 + 0.8 * clamp((target.spdNow || 0) / 36, 0, 1);
   const em = w ? evadeMult(w) : 1;
-  return clamp(target.st.evasion * LEG_EVA[target.pd[2]] * ms * em + (target.pilotEva || 0), 0, 0.62);
+  const cl = 1 - CLIMB_EVA_PENALTY * climbExposure(target.climbH);
+  return clamp(target.st.evasion * LEG_EVA[target.pd[2]] * ms * em * cl + (target.pilotEva || 0), 0, 0.62);
 }
 // パリィ(目標側)— melee武器を持ち EN が足りるとき
 function pParry(w, target) {
@@ -130,12 +139,14 @@ export function simulate(buildA, buildB, seed, opts = {}) {
   const names = [opts.nameA || 'α機', opts.nameB || 'β機'];
   const field = getField(opts.fieldId);
   // 障害物の実行時状態(hpはコピー)
-  const obs = field.obstacles.map((o, i) => ({ kind: o.kind, x: o.x, y: o.y, r: o.r,
+  const obs = field.obstacles.map((o, i) => ({ kind: o.kind, x: o.x, y: o.y, r: o.r, h: o.h || 0,
     hp: o.hp, hp0: o.hp, alive: true, idx: i }));
   const walls = obs.filter(o => o.kind === 'wall');
   const muds = obs.filter(o => o.kind === 'mud');
   const spikes = obs.filter(o => o.kind === 'spike');
-  const hzds = obs.filter(o => o.kind === 'mud' || o.kind === 'spike');
+  const rubbles = obs.filter(o => o.kind === 'rubble');
+  // 「進路上で判断が要る地形」= 泥/棘/瓦礫。渡る・迂回する・乗る、の3択をここで回す。
+  const hzds = obs.filter(o => o.kind === 'mud' || o.kind === 'spike' || o.kind === 'rubble');
 
   const pilots = opts.pilots || [];
   // 初期配置: seed由来の中心対称ランダム(=公平)。障害物から25m超・境界内を8回試行、失敗時は従来の水平配置
@@ -150,7 +161,9 @@ export function simulate(buildA, buildB, seed, opts = {}) {
       if (field.shape.kind === 'circle') {
         if (Math.hypot(px - field.shape.cx, py - field.shape.cy) > field.shape.r - 40) return false;
       } else if (px < 40 || py < 40 || px > (field.shape.w || ARENA) - 40 || py > (field.shape.h || ARENA) - 40) return false;
-      return obs.every(o => Math.hypot(px - o.x, py - o.y) > o.r + 25);
+      // 瓦礫は踏破可能なので余裕を詰める(25m を課すと小障害物を増やした戦場でスポーンが通らなくなる)。
+      // 0 にはしない=開幕から露出ペナルティを背負って始まるのは不公平(配置は中心対称でも瓦礫は非対称)。
+      return obs.every(o => Math.hypot(px - o.x, py - o.y) > o.r + (o.kind === 'rubble' ? 6 : 25));
     });
     if (okPos) { sx = ox; sy = oy; break; }
   }
@@ -191,10 +204,16 @@ export function simulate(buildA, buildB, seed, opts = {}) {
     // --- サンプル ---
     if (t >= nextSample - 1e-9) {
       states.push({ t: Math.round(t * 10) / 10,
-        m: m.map(k => ({ x: Math.round(k.x * 10) / 10, y: Math.round(k.y * 10) / 10,
-                         h: Math.round(k.h * 100) / 100, hp: Math.round(k.hp), en: Math.round(k.en),
-                         s: k.stance, a: k.wpns.map(w => w.a === Infinity ? -1 : w.a),
-                         pd: k.pd.slice() })) });
+        m: m.map(k => {
+          const s0 = { x: Math.round(k.x * 10) / 10, y: Math.round(k.y * 10) / 10,
+                       h: Math.round(k.h * 100) / 100, hp: Math.round(k.hp), en: Math.round(k.en),
+                       s: k.stance, a: k.wpns.map(w => w.a === Infinity ? -1 : w.a),
+                       pd: k.pd.slice() };
+          // cy=足場の標高(描画側が機体を持ち上げる)。0のときは載せない=毎サンプルの
+          // "cy":0 は states 全体で数十KBになり、サーバ権威対戦の応答をただ太らせる。
+          if (k.climbH > 0) s0.cy = k.climbH;
+          return s0;
+        }) });
       nextSample += SAMPLE;
     }
     // --- スナップショットからAI決定 ---
@@ -286,7 +305,7 @@ export function simulate(buildA, buildB, seed, opts = {}) {
           }
         }
       }
-      // ハザード認知: 進行方向の泥/棘を「踏む価値」で判定し、価値が無ければ接線迂回。
+      // ハザード認知: 進行方向の泥/棘/瓦礫を「踏む価値」で判定し、価値が無ければ接線迂回。
       // hover は免疫=常に直進。判断は機体状態のみから決まる(rng不使用=呼出数不変)。
       // ジレンマ(不利承知で突っ込む)は fields.js の配置(近道=危険地帯)とこの判断の積で生まれる。
       if (lgKind !== 'hover' && hzds.length && spd > 0.01) {
@@ -309,9 +328,19 @@ export function simulate(buildA, buildB, seed, opts = {}) {
           const d0 = Math.hypot(relx, rely);
           const margin = o.r + 8;
           // 踏む価値: 泥=脚種係数(速いほど失う時間が少ない)+意欲 / 棘=横断被弾の見込みと残HPの体力勘定
-          let cross;
+          // 瓦礫=踏破係数+意欲+「高所から撃ちたい」−「回避を捨てる損」。回避が持ち味の機体ほど
+          // 乗る価値が下がるので、同じ瓦礫でも履帯は乗り、跳兵は避ける=脚種で選択が分かれる。
+          let cross, halo = 26;
           if (o.kind === 'mud') {
             cross = (MUD_FACTOR[lgKind] != null ? MUD_FACTOR[lgKind] : 0.6) + want >= 0.85;
+          } else if (o.kind === 'rubble') {
+            const cf = CLIMB_FACTOR[lgKind] != null ? CLIMB_FACTOR[lgKind] : 0.72;
+            const e = climbExposure(o.h);
+            // 見晴らしは「撃ち合える距離に居て、撃てる遠距離武器がある」ときだけ値が付く
+            const perch = (usableRanged && dist < 340) ? 0.55 * e : 0;
+            const expo = 1.35 * e * clamp(me.st.evasion / 0.34, 0, 1.2);
+            cross = cf + want + perch - expo >= 0.85;
+            halo = 12;   // 小さいので斥力圏も小さい(26mだと瓦礫だらけの戦場が斥力の海になる)
           } else {
             const dmgEst = SPIKE_DPS * (2 * o.r) / Math.max(spd, 6);   // 直径横断の被弾見込み
             cross = me.hp > dmgEst * 4 && want >= 0.3;
@@ -321,9 +350,9 @@ export function simulate(buildA, buildB, seed, opts = {}) {
           if (esc == null || edge < esc.edge) {
             esc = { edge, ux: relx / (d0 || 1), uy: rely / (d0 || 1) };
           }
-          if (edge >= 0 && edge < 26) {
+          if (edge >= 0 && edge < halo) {
             // 縁に貼りつく振動対策: 踏まないと決めた地帯には近づくだけで緩い斥力(壁回避と同思想・弱め)
-            const push = (1 - edge / 26) * 1.0;
+            const push = (1 - edge / halo) * 1.0;
             rpx += (me.x - o.x) / d0 * push; rpy += (me.y - o.y) / d0 * push;
           }
           const tAhead = relx * uvx + rely * uvy;           // 進行方向への射影距離(中心まで)
@@ -367,6 +396,22 @@ export function simulate(buildA, buildB, seed, opts = {}) {
         const f = lgKind === 'hover' ? 1 : (MUD_FACTOR[lgKind] != null ? MUD_FACTOR[lgKind] : 0.6);
         vx *= f; vy *= f; spd *= f;
       }
+      // 瓦礫: 乗り越えている間は減速し、そのぶん標高を得る(hover は浮いたまま越える=免疫)。
+      // 重なっている場合はいちばん高い足場を採る。標高は pAcc/pDodge が読む(露出と見晴らし)。
+      let climbH = 0;
+      if (lgKind !== 'hover') {
+        let onR = null;
+        for (const o of rubbles) {
+          if (Math.hypot(me.x - o.x, me.y - o.y) < o.r && (onR === null || o.h > onR.h)) onR = o;
+        }
+        if (onR) {
+          const cf = CLIMB_FACTOR[lgKind] != null ? CLIMB_FACTOR[lgKind] : 0.72;
+          vx *= cf; vy *= cf; spd *= cf;
+          climbH = onR.h;
+        }
+      }
+      if (climbH > me.climbH) ev(t, 'climb', { who: i, h: climbH, x: me.x, y: me.y });
+      me.climbH = climbH;
       // 壁の回避(斥力)
       for (const o of walls) {
         if (!o.alive) continue;
@@ -656,6 +701,9 @@ function buildLog(events, groups, names, field) {
       L.push(`${T(e.t)} [障害物崩壊] 遮蔽物が破壊された`);
     } else if (e.kind === 'hazard') {
       L.push(`${T(e.t)} [地形損傷] ${tag(e.who)} 茨で${e.dmg}損耗(残${e.remain})`);
+    } else if (e.kind === 'climb' && e.h >= 1.5) {
+      // 低い段差(縁石級)まで書くと電文が埋まるので、姿勢が変わる高さだけ記録する
+      L.push(`${T(e.t)} [踏破] ${tag(e.who)} 高所へ乗り上げる — 射界を得るが、身を晒す`);
     } else if (e.kind === 'pbreak') {
       L.push(`${T(e.t)} [部位損傷] ${tag(e.who)} ${PART_JA[e.part]}${LVL_JA[e.lvl]}`);
     } else if (e.kind === 'self_hit') {
