@@ -6,7 +6,7 @@ import { narrate, VOICE_ROLES } from './voice.js';
 import { LINES } from './voice-lines.js';
 import { createUI, makeLogLine } from './ui.js';
 import { createRadar } from './radar.js';
-import { mechMesh, mechFocus } from './r3d.js';
+import { mechMesh, mechFocus, decorLiftAt } from './r3d.js';
 import { createR3DThree } from './r3d-three.js';
 
 export const CAMPAIGN = [
@@ -620,6 +620,7 @@ function startBattle(myBuild, foeBuild, seed, ctx) {
     hitstopUntil: 0, shakeUntil: 0, shakeDur: 240, shakeMag: 0,   // Ver6演出: ヒットストップ/画面シェイク(実時計・決定論の外)
     hitFlash: [-9, -9], hitFlashMag: [0, 0],   // Ver6演出: 被弾フラッシュ(機体が一瞬白熱)
     lastHit: [null, null], lastDodge: [null, null],   // St2演出: 被弾flinch/回避juke(描画のみ・シム非改変)
+    decorLift: [0, 0],   // v5: 装飾の硬い瓦礫に乗り上げた高さ(なまし済み。描画のみ)
     camCut: { t0: -9, dur: 0, x: 0, y: 0 }, camCutCool: -9,   // Ver6演出: クライマックス強制カメラカット(パリィ/大打撃)
     // リプレイ共有: この試合を再生するためのコード(自由入力は含めない)。args はもう一度観る用。
     // リプレイ観戦中は元コードをそのまま使う(再エンコードすると旧版の試合が現行版スタンプになるため)
@@ -879,8 +880,17 @@ function frame(now) {
     radar.render({ mechs: mst.map((m2, i) => ({ x: m2.x, y: m2.y, h: m2.h, hp: m2.hp, en: m2.en, color: battle.colors[i], alive: aliveArr[i] })), shots, blasts, obstacles: battle.obsState, sweep: tFx, theme }, tFx);
   }
   if (cockpit || (mode !== 'radar' && mode !== 'log')) {
+    // v5: 装飾の硬い瓦礫(縁石・折れた街灯・コンクリ塊)に乗り上げる。シムは知らない=描画だけの
+    // 足元オフセットで、乗って降りるだけなので進路も速度も変わらない。段差の当たりを 0.09s で
+    // なまして「跨いで乗り越える」動きにする(生値だとフレーム単位で上下に跳ねる)。
+    { const k = 1 - Math.exp(-Math.max(0.001, dtReal) / 0.09);
+      for (let i = 0; i < 2; i++) {
+        const want = decorLiftAt(battle.res.fieldId, mst[i].x, mst[i].y, 2.2);
+        battle.decorLift[i] += (want - battle.decorLift[i]) * k;
+      } }
     r3d.render({ mechs: mst.map((m2, i) => ({ mesh: battle.meshes[i], x: m2.x, y: m2.y, h: m2.h, hp: m2.hp, alive: aliveArr[i],
-        elev: m2.cy || 0,   // v5: 瓦礫の天端に立つ(標高は states の cy)
+        // v5: 足元のオフセット。cy=シムが知る足場(瓦礫の天端+/泥の沈み込み−)、decorLift=装飾の踏み面。
+        elev: (m2.cy || 0) + battle.decorLift[i],
         deadAge: battle.diedAt[i] != null && tFx >= battle.diedAt[i] ? tFx - battle.diedAt[i] : undefined,
         flash01: Math.max(0, 1 - (tFx - battle.hitFlash[i]) / 0.14) * (battle.hitFlashMag[i] || 0),   // Ver6: 被弾フラッシュ
         walkPhase: battle.walk[i], attack: atk[i], occluded: i === 1 && occluded,

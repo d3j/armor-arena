@@ -2228,9 +2228,16 @@ function wreckFaces(o, out) {
 // 機体より高く立っていると、必ず「すり抜け」として観戦者の目に映るため。
 // 「可動域」= shapeClamp が機体を閉じ込める範囲(rect なら実座標 20..980)。場外の街並みと
 // 外周20mの縁は機体が到達しないので対象外(実測 2026-08-01: 20..980 内の装飾頂点で y>2 は0件)。
-export function fieldDecorFaces(fieldId, out) {
+// solidsOut を渡すと「硬くて脛が埋まる高さの瓦礫」の踏み面も同時に集める(→ decorLiftAt)。
+// 面の生成と同じ場所で座標を出すので、装飾を動かしたときに踏み面だけ取り残されることがない。
+export function fieldDecorFaces(fieldId, out, solidsOut) {
   if (fieldId !== 'shigai') return;
   const S = WORLD_SCALE;
+  // 踏み面(シムm座標。h は描画単位): 円は x2/z2 を省略、細長いものは線分+半径のカプセルで置く。
+  // 舗装・区画線・焼け跡(厚みゼロ)とケーブル(柔らかい)は登録しない=乗り上げるのは硬い物だけ。
+  const solid = solidsOut
+    ? (x, z, r, h, x2, z2) => solidsOut.push({ x, z, r, h, x2, z2 })
+    : () => {};
   // (シムm, 描画単位の高さ, シムm) → ワールド座標
   const P = (x, y, z) => [ARENA_CX + (x - ARENA_CX) * S, y, ARENA_CZ + (z - ARENA_CZ) * S];
   const quad = (x0, z0, x1, z1, y, color, alpha, tex) => out.push({
@@ -2267,8 +2274,14 @@ export function fieldDecorFaces(fieldId, out) {
   // 色は暗いコンクリ。岩肌テクスチャは明色ベースなので、明るい頂点色だと白い擁壁のように
   // 前景を占領してしまう(実機確認 2026-07-31)。
   for (const s of [-1, 1]) {
-    for (let z = 60; z < 940; z += 80) box(AV + s * (HALF + 3), z + 40, 3, 40, 0.0, 1.1, '#6d6a64', 'concrete');
-    for (let x = 60; x < 940; x += 80) box(x + 40, AV + s * (HALF + 3), 40, 3, 0.0, 1.1, '#6d6a64', 'concrete');
+    for (let z = 60; z < 940; z += 80) {
+      box(AV + s * (HALF + 3), z + 40, 3, 40, 0.0, 1.1, '#6d6a64', 'concrete');
+      solid(AV + s * (HALF + 3), z, 3, 1.1, AV + s * (HALF + 3), z + 80);   // 縁石に乗り上げる
+    }
+    for (let x = 60; x < 940; x += 80) {
+      box(x + 40, AV + s * (HALF + 3), 40, 3, 0.0, 1.1, '#6d6a64', 'concrete');
+      solid(x, AV + s * (HALF + 3), 3, 1.1, x + 80, AV + s * (HALF + 3));
+    }
   }
   // --- 区画線(白の破線・交差点は空ける)---
   for (let z = 60; z < 940; z += 44) {
@@ -2297,6 +2310,9 @@ export function fieldDecorFaces(fieldId, out) {
     box(x + ax * 13, z + az * 13, ax ? 11 : 1.1, az ? 11 : 1.1, 0.2, 1.1, '#4c4f52', 'concrete'); // 路面に倒れた支柱
     box(x + ax * 27, z + az * 27, 2.4, 2.4, 0.2, 1.0, '#3a3d40', 'concrete');                  // 割れた笠
     glow(x + ax * 27, z + az * 27, 1.15, 0.7, 0.18, 0.7, '#ffd79a');
+    solid(x, z, 1.3, 1.6);                                                                     // 根元に乗り上げる
+    solid(x + ax * 2, z + az * 2, 1.1, 1.1, x + ax * 24, z + az * 24);                         // 倒れた支柱を跨ぐ
+    solid(x + ax * 27, z + az * 27, 2.4, 1.0);                                                 // 笠
   };
   for (let z = 120; z < 900; z += 130) {
     lampAt(AV - HALF - 9, z, 1, 0);
@@ -2316,6 +2332,9 @@ export function fieldDecorFaces(fieldId, out) {
     ['#ff4a34', '#ffca4a', '#4affa0'].forEach((c, i) => {
       glow(px - sx * 28, pz, 1.0, 0.4, 0.4, 0.2, c, sx * (i - 1) * 1.0, sz * 0.7);
     });
+    solid(px, pz, 1.3, 1.8);
+    solid(px - sx * 2, pz, 1.1, 1.2, px - sx * 25, pz);
+    solid(px - sx * 28, pz, 2.8, 1.7);
   }
   // --- 折れた電柱と路面を這うケーブル(v5: 立った支柱は残さない。理由は lampAt のコメント)---
   for (let i = 0; i < 7; i++) {
@@ -2323,6 +2342,9 @@ export function fieldDecorFaces(fieldId, out) {
     box(px, pz, 1.6, 1.6, 0, 1.8, '#5a5148', 'concrete');                       // 折れた根元
     box(px + 15, pz, 13, 1.2, 0.2, 1.3, '#5a5148', 'concrete');                 // 倒れた電柱
     box(px + 28, pz, 1.2, 9, 0.2, 1.0, '#5a5148', 'concrete');                  // 腕木
+    solid(px, pz, 1.6, 1.8);
+    solid(px + 2, pz, 1.2, 1.3, px + 28, pz);
+    solid(px + 28, pz - 9, 1.2, 1.0, px + 28, pz + 9);
     if (i > 0) {
       const qx = px - 120;
       for (const dz of [-6, 0, 6]) {
@@ -2365,7 +2387,38 @@ export function fieldDecorFaces(fieldId, out) {
     const sh = prismShape([c[0], r * 0.5, c[2]], AXIS_Y, r * 0.5, r * 0.5, r, 5,
       { jitter: (k) => (hash(i * 11 + k) - 0.5) * r * 0.6 });
     sh.faces.forEach((f) => out.push({ verts: f.map((vi) => sh.verts[vi]), color: '#57534c', alpha: 1, tex: 'concrete' }));
+    solid(x, z, r / S, r);   // 塊の半径はワールド単位で作っているのでシムmへ戻す
   }
+}
+
+// --- 装飾の踏み面: 硬い低い瓦礫に「乗り上げる」(render-only・シムは知らない) ---
+// 脛が埋まる高さ(〜2)の硬い物は、すり抜けるより乗り越えるほうが正しい。乗ってから降りるだけなので
+// 進路も速度も変わらない=シムに上げる必要がない(fields.js の昇格の線引きに触れずに済む)。
+// 座標はシムm。戦場ごとに1回作ってキャッシュする(静的)。
+const decorSolidCache = new Map();
+export function fieldDecorSolids(fieldId) {
+  let s = decorSolidCache.get(fieldId);
+  if (!s) { s = []; fieldDecorFaces(fieldId, [], s); decorSolidCache.set(fieldId, s); }
+  return s;
+}
+// (x,z)=シムm の足元にある踏み面の高さ(描画単位)。pad は機体の footprint 相当の余裕(シムm)。
+export function decorLiftAt(fieldId, x, z, pad) {
+  const list = fieldDecorSolids(fieldId);
+  const p = pad || 0;
+  let best = 0;
+  for (const s of list) {
+    if (s.h <= best) continue;                       // すでにもっと高い所に乗っている
+    let dx = x - s.x, dz = z - s.z;
+    if (s.x2 !== undefined) {                        // カプセル: 線分までの距離
+      const ax = s.x2 - s.x, az = s.z2 - s.z;
+      const l2 = ax * ax + az * az || 1;
+      let t = (dx * ax + dz * az) / l2;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      dx -= ax * t; dz -= az * t;
+    }
+    if (dx * dx + dz * dz < (s.r + p) * (s.r + p)) best = s.h;
+  }
+  return best;
 }
 
 // ==================== 遠景(地平のシルエット) ====================

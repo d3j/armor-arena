@@ -10,7 +10,7 @@
 //        回避↓ / 命中↑(標高 h による露出と見晴らし)。ハザード認知に「渡る/迂回」に次ぐ
 //        第3の選択肢「乗る」を足した。rng は一切増やしていない(判断は機体状態のみ)。
 import { deriveStats, bandMult, BANDS } from './parts.js';
-import { getField, MUD_FACTOR, SPIKE_DPS, losBlockedBy,
+import { getField, MUD_FACTOR, SPIKE_DPS, MUD_SINK, losBlockedBy,
          CLIMB_FACTOR, CLIMB_EVA_PENALTY, CLIMB_ACC_BONUS, climbExposure } from './fields.js';
 export { losBlockedBy } from './fields.js';
 export { validateBuild } from './parts.js';
@@ -71,7 +71,7 @@ function mkMech(build, x, y, h, pilot) {
            alive: true, walk: 0, strafePhase: 0, spdNow: 0, hzAcc: 0, hzT: 0, stance: 'hd',
            hzSide: 0, hzAt: -9, hzEscOn: false,       // ハザード迂回方向ラッチ+脱出ヒステリシス(振動防止)
            hzWant: 0, hzWantAt: -9,                   // 「踏む意欲」の慣性(判断の毎tick反転防止)
-           climbH: 0,                                 // Ver7: 今立っている足場の標高(m。0=地面)
+           climbH: 0, footY: 0,                       // Ver7: 足場の標高(climbH=露出用の正値 / footY=描画用。泥は負)
            pd: [0, 0, 0, 0, 0],                       // 部位状態(armR,armL,legs,gen,body)
            curEngage: st.parts.ai.engage, cand: null, candIdx: 0,   // 適応交戦距離
            riposteUntil: -1,                          // Ver6: パリィ後の反撃窓の終了時刻
@@ -209,9 +209,9 @@ export function simulate(buildA, buildB, seed, opts = {}) {
                        h: Math.round(k.h * 100) / 100, hp: Math.round(k.hp), en: Math.round(k.en),
                        s: k.stance, a: k.wpns.map(w => w.a === Infinity ? -1 : w.a),
                        pd: k.pd.slice() };
-          // cy=足場の標高(描画側が機体を持ち上げる)。0のときは載せない=毎サンプルの
-          // "cy":0 は states 全体で数十KBになり、サーバ権威対戦の応答をただ太らせる。
-          if (k.climbH > 0) s0.cy = k.climbH;
+          // cy=足元の標高オフセット(描画側が機体を持ち上げる/沈める)。0のときは載せない=
+          // 毎サンプルの "cy":0 は states 全体で数十KBになり、サーバ権威対戦の応答をただ太らせる。
+          if (k.footY !== 0) s0.cy = Math.round(k.footY * 100) / 100;
           return s0;
         }) });
       nextSample += SAMPLE;
@@ -392,13 +392,13 @@ export function simulate(buildA, buildB, seed, opts = {}) {
       // 泥: 脚種別の速度低下(hoverは免疫)
       let mudded = false;
       for (const o of muds) { if (Math.hypot(me.x - o.x, me.y - o.y) < o.r) { mudded = true; break; } }
-      if (mudded) {
-        const f = lgKind === 'hover' ? 1 : (MUD_FACTOR[lgKind] != null ? MUD_FACTOR[lgKind] : 0.6);
-        vx *= f; vy *= f; spd *= f;
-      }
-      // 瓦礫: 乗り越えている間は減速し、そのぶん標高を得る(hover は浮いたまま越える=免疫)。
-      // 重なっている場合はいちばん高い足場を採る。標高は pAcc/pDodge が読む(露出と見晴らし)。
-      let climbH = 0;
+      const mudF = lgKind === 'hover' ? 1 : (MUD_FACTOR[lgKind] != null ? MUD_FACTOR[lgKind] : 0.6);
+      if (mudded) { vx *= mudF; vy *= mudF; spd *= mudF; }
+      // 足元の標高オフセット(m): 瓦礫に乗れば+、泥に沈めば−。hover はどちらも起きない(浮いている)。
+      //   瓦礫 … 乗り越えている間は減速し、そのぶん高くなる。重なりはいちばん高い足場を採る。
+      //   泥   … 脚を取られる脚種ほど深く沈む。**なぜ遅いのかを目で見せる**ための値で、
+      //          当たり判定は変えない(露出率は正の標高だけを読む=沈んでも的は小さくならない)。
+      let footY = 0;
       if (lgKind !== 'hover') {
         let onR = null;
         for (const o of rubbles) {
@@ -407,11 +407,14 @@ export function simulate(buildA, buildB, seed, opts = {}) {
         if (onR) {
           const cf = CLIMB_FACTOR[lgKind] != null ? CLIMB_FACTOR[lgKind] : 0.72;
           vx *= cf; vy *= cf; spd *= cf;
-          climbH = onR.h;
+          footY = onR.h;
+        } else if (mudded) {
+          footY = -MUD_SINK * (1 - mudF);
         }
       }
-      if (climbH > me.climbH) ev(t, 'climb', { who: i, h: climbH, x: me.x, y: me.y });
-      me.climbH = climbH;
+      if (footY > 0 && footY > me.climbH) ev(t, 'climb', { who: i, h: footY, x: me.x, y: me.y });
+      me.climbH = footY > 0 ? footY : 0;   // 露出/見晴らしの入力は正の標高だけ
+      me.footY = footY;
       // 壁の回避(斥力)
       for (const o of walls) {
         if (!o.alive) continue;
