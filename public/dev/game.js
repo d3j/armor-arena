@@ -620,7 +620,7 @@ function startBattle(myBuild, foeBuild, seed, ctx) {
     hitstopUntil: 0, shakeUntil: 0, shakeDur: 240, shakeMag: 0,   // Ver6演出: ヒットストップ/画面シェイク(実時計・決定論の外)
     hitFlash: [-9, -9], hitFlashMag: [0, 0],   // Ver6演出: 被弾フラッシュ(機体が一瞬白熱)
     lastHit: [null, null], lastDodge: [null, null],   // St2演出: 被弾flinch/回避juke(描画のみ・シム非改変)
-    groundLift: [0, 0],   // v5: 足元の地面高(シムの足場と装飾の踏み面の高いほう。なまし済み・描画のみ)
+    groundLift: [0, 0], groundSeeded: false,   // v5: 足元の地面高(シムの足場と装飾の踏み面の高いほう。なまし済み・描画のみ)
     camCut: { t0: -9, dur: 0, x: 0, y: 0 }, camCutCool: -9,   // Ver6演出: クライマックス強制カメラカット(パリィ/大打撃)
     // リプレイ共有: この試合を再生するためのコード(自由入力は含めない)。args はもう一度観る用。
     // リプレイ観戦中は元コードをそのまま使う(再エンコードすると旧版の試合が現行版スタンプになるため)
@@ -714,6 +714,23 @@ function frame(now) {
   const res = battle.res, t = Math.min(battle.t, res.duration);
   const tFx = battle.t;   // エフェクト・実況・死亡アニメ用の非クランプ時計
   const mst = interp(res, t);
+  // v5: 足元の地面高。cy=シムが知る足場(瓦礫の天端+ / 泥の沈み込み−)、decorLiftAt=装飾の踏み面
+  // (縁石・折れた街灯・コンクリ塊。シムは知らない=乗って降りるだけで進路も速度も変わらない)。
+  // **両者は「地面の高さ」なので足し算ではなく高いほう**。装飾が無い所(dl=0)では泥の沈み込みを
+  // 潰さないよう cy をそのまま採る。0.09s のなましは実時計ではなく**試合の時計**で回す
+  // (倍速再生・一時停止・ヒットストップに追従させる)。
+  // 描画ブロックの中ではなく**ここ**で更新するのが肝: 3Dを描かないタブ(レーダー/実況)でも
+  // 進み続けるので、そのまま決着しても敗者カメラの狙点が地面に取り残されない。
+  { const dtG = (battle.paused || frozen) ? 0 : dtReal * sp;
+    const k = dtG > 0 ? 1 - Math.exp(-dtG / 0.09) : 1;
+    for (let i = 0; i < 2; i++) {
+      const dl = decorLiftAt(battle.res.fieldId, mst[i].x, mst[i].y, 2.2);
+      const cy = mst[i].cy || 0;
+      const want = dl > 0 ? Math.max(cy, dl) : cy;
+      // 初回フレームは種を置く(?still=1 は1フレームしか回らないので、なますと途中値で固まる)
+      battle.groundLift[i] = battle.groundSeeded ? battle.groundLift[i] + (want - battle.groundLift[i]) * k : want;
+    }
+    battle.groundSeeded = true; }
   // イベント消化(SFX・promoDbg・カメラ演出用)
   while (battle.evIdx < battle.evs.length && battle.evs[battle.evIdx].t <= t) {
     const e = battle.evs[battle.evIdx++];
@@ -754,11 +771,16 @@ function frame(now) {
   if (logDirty) els.logview.scrollTop = els.logview.scrollHeight;
   // 発射エフェクト(直近ウィンドウ。tFx=終了後も経過して然るべく消える)
   const shots = [], blasts = [];
-  // v5: 弾道と炸裂の高さは「そのイベント時刻に機体が居た足場の標高」に合わせる。生きている
-  // groundLift ではなく states の cy を引くのは、2.4秒前のイベントを今の高さで描くと外れるため。
-  const cyAt = (t2, who) => {
+  // v5: 弾道と炸裂の高さは「そのイベント時刻に、その座標で機体が立っていた地面の高さ」に合わせる。
+  // 生きている groundLift ではなく states を引くのは、2.4秒前のイベントを今の高さで描くと外れるため。
+  // **足元と同じ式(装飾の踏み面も含む)にすること**: cy だけ見ると、装飾の瓦礫に乗って撃ったとき
+  // マズルフラッシュ(computeMechPose 経由=踏み面込み)だけが上がって弾道が地上高に残る
+  // (実測 2026-08-01: 崩落市街のイベントの16.9%・最大1.80=機体全高の43%が割れていた)。
+  const liftAt = (t2, who, x, y) => {
     const s2 = res.states[Math.min(res.states.length - 1, Math.max(0, Math.round(t2 * 10)))];
-    return (s2 && s2.m[who] && s2.m[who].cy) || 0;
+    const cy = (s2 && s2.m[who] && s2.m[who].cy) || 0;
+    const dl = decorLiftAt(battle.res.fieldId, x, y, 2.2);
+    return dl > 0 ? Math.max(cy, dl) : cy;
   };
   for (let i = battle.evIdx - 1; i >= 0; i--) {
     const e = battle.evs[i]; if (tFx - e.t > 2.4) break;
@@ -767,21 +789,21 @@ function frame(now) {
       const dur = e.wpn === 'beam' || e.wpn === 'blade' ? 0.22 : Math.max(0.15, d / (getPart('wpn', findWpnId(e.wname)) ? getPart('wpn', findWpnId(e.wname)).projSpeed || 600 : 600));
       const age = (tFx - e.t) / dur;
       if (age <= 1) shots.push({ x: e.x, y: e.y, tx: e.tx, ty: e.ty, kind: e.wpn, age01: age,
-        ey0: cyAt(e.t, e.who), ey1: cyAt(e.t, e.targ) });
+        ey0: liftAt(e.t, e.who, e.x, e.y), ey1: liftAt(e.t, e.targ, e.tx, e.ty) });
     } else if (e.kind === 'hit') {
-      const age = (tFx - e.t) / 0.5; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, big: false, kind: 'hit', wpn: e.wpn, ey: cyAt(e.t, e.targ) });
+      const age = (tFx - e.t) / 0.5; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, big: false, kind: 'hit', wpn: e.wpn, ey: liftAt(e.t, e.targ, e.x, e.y) });
     } else if (e.kind === 'parry') {
-      const age = (tFx - e.t) / 0.45; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, big: false, kind: 'parry', ey: cyAt(e.t, e.targ) });
+      const age = (tFx - e.t) / 0.45; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, big: false, kind: 'parry', ey: liftAt(e.t, e.targ, e.x, e.y) });
     } else if (e.kind === 'dodge' && e.splash > 0) {
       // Ver6: ミサイルを躱しても爆風だけ被る=小さめの炸裂(機構②の可視化)
-      const age = (tFx - e.t) / 0.5; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, kind: 'hit', wpn: 'missile', scale: 0.5, ey: cyAt(e.t, e.targ) });
+      const age = (tFx - e.t) / 0.5; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, kind: 'hit', wpn: 'missile', scale: 0.5, ey: liftAt(e.t, e.targ, e.x, e.y) });
     } else if (e.kind === 'hazard') {
       // Ver6: 茨(棘)を踏んだ火花=地形が効いている感(rifleヒットの火花を流用)
-      const age = (tFx - e.t) / 0.5; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, kind: 'hit', wpn: 'rifle', ey: cyAt(e.t, e.who) });
+      const age = (tFx - e.t) / 0.5; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, kind: 'hit', wpn: 'rifle', ey: liftAt(e.t, e.who, e.x, e.y) });
     } else if (e.kind === 'obs_down') {
       const age = (tFx - e.t) / 1.6; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, big: true, kind: 'boom' });
     } else if (e.kind === 'destroyed') {
-      const age = (tFx - e.t) / 2.2; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, big: true, kind: 'boom', ey: cyAt(e.t, e.who) });
+      const age = (tFx - e.t) / 2.2; if (age <= 1) blasts.push({ x: e.x, y: e.y, age01: age, big: true, kind: 'boom', ey: liftAt(e.t, e.who, e.x, e.y) });
     }
   }
   // 歩行位相 + 移動方向(②: 機体ローカルの前後/横速度をEMAで平滑してレンダラへ渡す。
@@ -889,19 +911,6 @@ function frame(now) {
     radar.render({ mechs: mst.map((m2, i) => ({ x: m2.x, y: m2.y, h: m2.h, hp: m2.hp, en: m2.en, color: battle.colors[i], alive: aliveArr[i] })), shots, blasts, obstacles: battle.obsState, sweep: tFx, theme }, tFx);
   }
   if (cockpit || (mode !== 'radar' && mode !== 'log')) {
-    // v5: 足元の地面高。cy=シムが知る足場(瓦礫の天端+ / 泥の沈み込み−)、decorLiftAt=装飾の踏み面
-    // (縁石・折れた街灯・コンクリ塊。シムは知らない=乗って降りるだけで進路も速度も変わらない)。
-    // **両者は「地面の高さ」なので足し算ではなく高いほう**。装飾が無い所(dl=0)では泥の沈み込みを
-    // 潰さないよう cy をそのまま採る。0.09s のなましは実時計ではなく**試合の時計**で回す
-    // (倍速再生・一時停止・ヒットストップに追従させる)。
-    { const dtG = (battle.paused || frozen) ? 0 : dtReal * sp;
-      const k = dtG > 0 ? 1 - Math.exp(-dtG / 0.09) : 1;   // 止まっている間はなまさず即値(静止画も)
-      for (let i = 0; i < 2; i++) {
-        const dl = decorLiftAt(battle.res.fieldId, mst[i].x, mst[i].y, 2.2);
-        const cy = mst[i].cy || 0;
-        const want = dl > 0 ? Math.max(cy, dl) : cy;
-        battle.groundLift[i] += (want - battle.groundLift[i]) * k;
-      } }
     r3d.render({ mechs: mst.map((m2, i) => ({ mesh: battle.meshes[i], x: m2.x, y: m2.y, h: m2.h, hp: m2.hp, alive: aliveArr[i],
         elev: battle.groundLift[i],
         deadAge: battle.diedAt[i] != null && tFx >= battle.diedAt[i] ? tFx - battle.diedAt[i] : undefined,

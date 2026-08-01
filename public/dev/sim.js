@@ -719,8 +719,9 @@ function buildLog(events, groups, names, field) {
       L.push(`${T(e.t)} [障害物崩壊] 遮蔽物が破壊された`);
     } else if (e.kind === 'hazard') {
       L.push(`${T(e.t)} [地形損傷] ${tag(e.who)} 茨で${e.dmg}損耗(残${e.remain})`);
-    } else if (e.kind === 'climb' && e.h >= 1.5) {
-      // 低い段差(縁石級)まで書くと電文が埋まるので、姿勢が変わる高さだけ記録する
+    } else if (e.kind === 'climb') {
+      // climb はシム側で既に「天端(1.5以上)へ達した瞬間だけ・3秒に1回まで」に絞ってある。
+      // ここで高さを再判定すると二重の門になって、閾値を動かしたとき片方だけ効く。
       L.push(`${T(e.t)} [踏破] ${tag(e.who)} 高所へ乗り上げる — 射界を得るが、身を晒す`);
     } else if (e.kind === 'pbreak') {
       L.push(`${T(e.t)} [部位損傷] ${tag(e.who)} ${PART_JA[e.part]}${LVL_JA[e.lvl]}`);
