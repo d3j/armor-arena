@@ -448,6 +448,55 @@ table.rank-table tr.me { background: rgba(255,176,32,.08); }
 .aftermath-meta { text-align: center; font-size: 12.5px; color: var(--green); letter-spacing: .03em; }
 .aftermath-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .aftermath-actions button { flex: 1 1 84px; }
+/* bar(常に見える)と detail(モバイル/低背ではたたむ)の2段。広い画面では両方そのまま縦に並ぶ。 */
+.aftermath-bar, .aftermath-detail { display: flex; flex-direction: column; gap: 8px; }
+.aftermath-primary { display: flex; gap: 6px; align-items: stretch; }
+/* 主ボタンは敵機名を抱えるので、名前が長い機体(最長「GH-43 フクロウノメ」)でも崩れないよう詰める */
+.aftermath-primary > button:first-child { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.aftermath-toggle { display: none; flex: 0 0 auto; }   /* 出すのは下の固定シートのときだけ */
+
+/* ---- 決着シート(モバイル/低背): 画面下端に固定して必ず視界へ入れる ----------------------------
+   なぜ要るか(実測 2026-08-02。docs/ux-flow.md §4.3):
+     縦積み(<720px)では戦果が **常に fold の外**に出る — 390×844 で 224px、390×667 で 298px、
+     360×640 で 310px 下(最悪=昇格+負傷/KIA+勲章の5行増しで 390×844 なら 306px)。
+     横並びでも窓が低いと同じことが起きる(844×390 の横持ちで 129px、1024×600 は最悪ケースで 53px)。
+   どう収めるか:
+     ⑴ たたんだ bar だけを下端に置く。ステージ下端〜fold の空きは実測 280 / 206 / 195px なので
+        **3D(余韻カメラの周回)を1pxも隠さない**。隠れるのは決着済みの HP ゲージ側だけ。
+     ⑵ 開いたときの上限は min(52vh, 440px)。**ワイドで戦果を中央に置かなかったのと同じ理由**で、
+        余韻カメラが敗者を据える画面中心を塞がないため(ステージ中心は 390×844 で y≈319 /
+        360×640 で y≈259。52vh ならシート上端は 405 / 307 でどちらも中心より下)。
+        最悪の 292px は上限に収まるので、内部スクロールは保険。
+   コックピット(≥1100px)は除外する — あちらは 2026-08-01 に決めた左中段の配置を使う。 */
+@media (max-width: 719px), (max-height: 660px) {
+  section[data-screen="battle"]:not(.cockpit) .aftermath-box {
+    position: fixed; z-index: 60; left: 0; right: 0; bottom: 0;
+    max-height: min(52vh, 440px);
+    padding: 10px 14px calc(var(--safe-b) + 10px);
+    border-left: none; border-right: none; border-bottom: none;
+    background-color: rgba(13, 18, 24, .94);
+    box-shadow: 0 -10px 34px rgba(0, 0, 0, .55);
+  }
+  section[data-screen="battle"]:not(.cockpit) .aftermath-box .aftermath-bar { flex: 0 0 auto; }
+  section[data-screen="battle"]:not(.cockpit) .aftermath-box .aftermath-headline { font-size: 18px; }
+  section[data-screen="battle"]:not(.cockpit) .aftermath-box .aftermath-detail { display: none; }
+  section[data-screen="battle"]:not(.cockpit) .aftermath-box.open .aftermath-detail {
+    display: flex; overflow-y: auto; min-height: 0;
+  }
+  section[data-screen="battle"]:not(.cockpit) .aftermath-box .aftermath-toggle { display: block; }
+}
+/* 横並び(≥720px)で窓が低いとき: 全幅の帯にすると **3Dの下端を食い、開くと敗者まで隠す**
+   (実測 844×390: 全幅だとステージ下端 324 に対しシート上端 274、開くと 187 で画面中心 199 を割る)。
+   この帯だけは HUD の列(flex 0 0 300px)の上にぴったり重ねる=ステージには一切かからない。
+   right の式は .screen.wide(max-width:960px・padding 14px)の内側右端に合わせるためのもの。 */
+@media (min-width: 720px) and (max-height: 660px) {
+  section[data-screen="battle"]:not(.cockpit) .aftermath-box {
+    left: auto; right: calc(max(0px, (100vw - 960px) / 2) + 14px);
+    width: 300px; padding: 10px;
+    border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+    bottom: calc(var(--safe-b) + 10px);
+  }
+}
 
 /* ---- 結果画面 ---- */
 #result-inner { text-align: center; display: flex; flex-direction: column; gap: 14px; padding: 10px 6px; }
@@ -495,33 +544,69 @@ table.rank-table tr.me { background: rgba(255,176,32,.08); }
 .fight-row button.locked { opacity: .38; cursor: not-allowed; }
 .fight-row button span:first-child { font-size: 11px; display: block; }
 
-/* 工廠の機体プレビュー */
-.mech-preview { width: 100%; height: 170px; display: block; background: #0a1018; border: 1px solid var(--border-dim, #223); margin-bottom: 10px; }
-.viewer-open { width: 100%; margin-bottom: 10px; }
-
-/* ---- 機体鑑賞(viewer) ---- */
-.viewer-layout { flex-direction: column; }
+/* ---- 工廠 = 鑑賞モード(docs/ux-flow.md §4.4) ------------------------------------------------
+   旧・工廠(縦に長いパネルの列)と旧・機体鑑賞(sticky ステージ)を1画面に統合したもの。
+   要は **ステージを常に見えるところに置き、数字(readout・総額)をステージの隣から離さない**。
+   旧・工廠の実測では、パーツを選ぶ位置でステータス7ゲージが 0/7 可視・総額は fold の 302px 上にあり、
+   「選ぶ」と「効果を見る」が同時に成立していなかった。 */
+.hangar-layout { flex-direction: column; }
 /* ステージは追従(sticky)。操作パネルを下へスクロールしても機体が見えたままになる。 */
-.viewer-stage {
+.hangar-stage {
   position: sticky; top: 0; z-index: 2;   /* 隙間を空けると裏のパネルが覗くので 0 で貼り付ける */
   width: 100%; height: min(46vh, 460px);
   background: var(--bg-inset); border: 1px solid var(--border); overflow: hidden;
 }
 .mech-viewer { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
 .mech-viewer:active { cursor: grabbing; }
-.viewer-ctl { flex: 1; min-width: 0; }
+.hangar-ctl { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 @media (min-width: 720px) {
-  .viewer-layout { flex-direction: row; align-items: flex-start; }
-  .viewer-stage { flex: 1; height: min(70vh, 640px); top: 12px; }
-  .viewer-ctl { flex: 0 0 330px; }
+  .hangar-layout { flex-direction: row; align-items: flex-start; }
+  .hangar-stage { flex: 1; height: min(70vh, 640px); top: 12px; }
+  .hangar-ctl { flex: 0 0 360px; }
 }
+/* readout: ステージのすぐ下(ワイドでは操作列の頭)に貼り付く「常時見える数字」 */
+.hangar-readout {
+  position: sticky; z-index: 1; top: min(46vh, 460px);
+  background: var(--bg-panel); border: 1px solid var(--border); border-top: none;
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
+}
+@media (min-width: 720px) {
+  .hangar-readout { position: static; border-top: 1px solid var(--border); }
+}
+.readout-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.readout-name { color: var(--amber); font-size: 13px; letter-spacing: .05em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.readout-gauges { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; }
+@media (max-width: 359px) { .readout-gauges { grid-template-columns: 1fr; } }
+.hangar-pane { display: flex; flex-direction: column; gap: 10px; }
+.hangar-mode button { flex: 1 1 0; }
+.build-summary { margin: 8px 0 0; line-height: 1.8; }
+/* 下の帯: 総額/予算 と 出撃。ここが常に見えているので、超過に気づかないまま出撃できない。 */
+.hangar-bar {
+  position: sticky; bottom: 0; z-index: 3;
+  margin-top: 4px; padding: 8px 10px calc(var(--safe-b) + 8px);
+  background: rgba(13, 18, 24, .94); border: 1px solid var(--border);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, .45);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.hangar-cost .lbl { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--sub); }
+.hangar-cost .lbl b { color: var(--ink); }
+.hangar-cost.over .lbl b { color: var(--red); }
+.hangar-bar-btns { display: flex; gap: 8px; }
+.hangar-go { flex: 1 1 auto; }
+.hangar-go:disabled { opacity: .5; cursor: not-allowed; }
+/* 保存スロットは呼び出し式(常設すると 394px がパーツ選びを押し下げる)。
+   **バーの中に置く**(ui.js)ので自前で sticky にしない — 兄弟で両方 sticky にすると下端を取り合って
+   総額バーと出撃ボタンを覆い隠す。開いたときはバーが上へ伸び、溢れる分は中でスクロールする。 */
+.slot-sheet {
+  background: var(--bg-inset); border: 1px solid var(--amber-dim);
+  padding: 10px; display: flex; flex-direction: column; gap: 8px;
+  max-height: min(46vh, 380px); overflow-y: auto;
+}
+.slot-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .vw-btn-row { display: flex; flex-wrap: wrap; gap: 5px; }
 .vw-btn-row button { flex: 1 1 auto; white-space: nowrap; }
 .vw-btn-row button.active { color: var(--amber); border-color: var(--amber); background: var(--bg-panel-2); }
 .vw-sub { font-size: 10.5px; color: var(--sub); letter-spacing: .16em; margin: 9px 0 4px; }
-.vw-info { display: flex; flex-direction: column; gap: 3px; }
-.vw-info-name { color: var(--amber); font-size: 13.5px; letter-spacing: .06em; }
-.vw-over { color: var(--red); }
 .vw-part-list { display: flex; flex-direction: column; gap: 5px; }
 .vw-part-row { display: flex; gap: 5px; align-items: stretch; }
 .vw-part-row button { flex: 0 0 40px; padding: 6px 0; }
@@ -611,6 +696,13 @@ table.rank-table tr.me { background: rgba(255,176,32,.08); }
   width: min(360px, 28vw); pointer-events: auto;
   background-color: rgba(13, 18, 24, .88);
   box-shadow: 0 12px 44px rgba(0, 0, 0, .6);
+  /* 高さの上限を「レーダーPiPに絶対に届かない値」として幾何から出す(中段配置は上下対称に伸びるので
+     使えるのは H − 2×(下端の障害物) )。決着の行数でパネル高が変わるため、固定値で見積もると
+     内容が増えたときに黙って重なる(実測: 行が増えた版で 1440×860 のとき 18px 食い込んだ)。
+     溢れたぶんは中でスクロールさせる。下の max-height:820px の帯では下端が固定なので上へ伸びる。 */
+  max-height: calc(100vh - 2 * (var(--safe-b) + 16px + min(236px, 20vw) + 12px));
+  max-height: calc(100dvh - 2 * (var(--safe-b) + 16px + min(236px, 20vw) + 12px));
+  overflow-y: auto;
 }
 /* 縦が詰まった窓では中段に置けない: .cockpit は幅(1100px)だけの条件なので、高さ700〜800pxの
    ノートPC窓ではレーダーPiPと重なる(パネルは pointer-events:auto なのでレーダー操作まで食う)。
@@ -623,5 +715,13 @@ table.rank-table tr.me { background: rgba(255,176,32,.08); }
   .cockpit .aftermath-box {
     top: auto; transform: none;
     bottom: calc(var(--safe-b) + 16px + min(236px, 20vw) + 12px);
+    /* 下端が固定なので上へ伸びる。上は TGT-A(左上・高さ約191px)の下までに留める
+       = safe-t + 12(TGT-Aの上端)+ 191(高さ)+ 12(間隔)= 215px を予約する。
+       (旧・申し送りの「高さ640px前後で戦果パネルがTGT-Aと24px重なる」もこれで解消)
+       **下限 150px は必須**: .cockpit は幅(≥1100px)だけの条件なので「幅は足りるが高さが無い」窓
+       (実測 1280×450)では式が負になり、max-height が 0 に丸められて **戦果も「▶ 次の相手」も
+       消える**。そこまで詰まったら TGT-A の予約を諦めて出すほうを採る(中身はスクロールできる)。 */
+    max-height: max(150px, calc(100vh - var(--safe-b) - 16px - min(236px, 20vw) - 12px - var(--safe-t) - 215px));
+    max-height: max(150px, calc(100dvh - var(--safe-b) - 16px - min(236px, 20vw) - 12px - var(--safe-t) - 215px));
   }
 }

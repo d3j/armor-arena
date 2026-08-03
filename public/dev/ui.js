@@ -158,7 +158,7 @@ export function createUI(root, hooks) {
   hooks = hooks || {};
   clear(root);
 
-  var state = { user: null, hangarTab: 'frame', lastHangar: null, lastCampaign: null, sortieField: null };
+  var state = { user: null, hangarTab: 'frame', hangarPane: 'build', lastHangar: null, lastCampaign: null, sortieField: null };
   var els = { screens: {} };
 
   /* ===================== title ===================== */
@@ -258,28 +258,77 @@ export function createUI(root, hooks) {
   }
   renderLoginArea();
 
-  /* ===================== hangar ===================== */
-  var statsPanel = h('div', { class: 'panel' });
+  /* ===================== hangar(工廠 = 鑑賞モード) =====================
+     docs/ux-flow.md §4.4: 工廠と機体鑑賞を1画面に統合した。全画面ステージで機体を動かしながらパーツを選び、
+     書き換えるのは **出撃機体そのもの**(S.current)。鑑賞用のコピーは廃止した。
+
+     コピーは「鑑賞の構成送りが出撃機体を黙って書き換える」事故(2026-07-28)の対策だったが、
+     事故の芯は *別の場所で編集した結果が、見えないところで本体に入った* ことのほうだった。
+     ⑴編集する場所と結果が出る場所を同じにする ⑵総額/予算を下の帯で常時見せる
+     ⑶超過中は「この機体で出撃」を無効化する —— の3つで置き換わるので、分離はもう要らない。
+     (超過は可逆な状態であって、データの損失ではない。悪かったのは気づけなかったことだけ。)
+
+     画面: [ステージ(sticky/ワイドでは左)] + [readout(常時) / 組む・動かすのタブ] + [下の帯: 総額+スロット+出撃]
+     ステージの canvas は class="mech-viewer" のまま = game.js の駆動側(viewerTick)がそのまま使える。 */
+  var VIEWER_MOVES = [
+    { key: 'stop',  label: '■ 停止' },
+    { key: 'fwd',   label: '▲ 前進' },
+    { key: 'back',  label: '▼ 後退' },
+    { key: 'left',  label: '◀ 左移動' },
+    { key: 'right', label: '右移動 ▶' }
+  ];
+  var VIEWER_SPEEDS = [
+    { key: 'slow',   label: '低速', mul: 0.30 },   // 大股のゆっくりした重い足取り(歩幅が伸びる)
+    { key: 'cruise', label: '巡航', mul: 0.65 },
+    { key: 'full',   label: '全速', mul: 1.00 }
+  ];
+  var VIEWER_TURNS = [
+    { key: -1, label: '↺ 左旋回' },
+    { key: 0,  label: '旋回停止' },
+    { key: 1,  label: '右旋回 ↻' }
+  ];
+  /* カメラ位置は機体の向きを基準にした方位角 az[deg](0=正面から顔を見る / 180=背面)と仰角 el[deg]。 */
+  var VIEWER_CAMS = [
+    { key: 'orbit',   label: '自動周回',     az: 38,  el: 16 },
+    { key: 'front',   label: '正面',         az: 0,   el: 11 },
+    { key: 'quarter', label: '斜め前',       az: 38,  el: 16 },
+    { key: 'side',    label: '側面',         az: 90,  el: 11 },
+    { key: 'rear',    label: '背面',         az: 180, el: 12 },
+    { key: 'top',     label: '俯瞰',         az: 45,  el: 52 },
+    { key: 'low',     label: 'ローアングル', az: 25,  el: -9 }
+  ];
+  var VIEWER_DIST = { min: 3.4, max: 24 };
+
+  /* 入力状態。game.js の viewerTick が毎フレーム読む。auto=true の間は自動実演(旧・工廠プレビューの
+     20秒の巡回)が動き、移動/旋回/動作のボタンを触った瞬間に手動へ降りる。 */
+  var viewerIn = {
+    move: 'stop', speedKey: 'cruise', speedMul: 0.65, turn: 0,
+    cam: 'orbit', az: 38, el: 16, dist: 7.6,
+    repeat: false, auto: true,
+    queue: []      // 単発アクション(game.js が毎フレーム空にする)
+  };
+  function viewerManual() {   // 手で触ったら自動実演を降りる(カメラ操作だけなら降りない)
+    if (!viewerIn.auto) return;
+    viewerIn.auto = false;
+    renderViewerMoves(); renderViewerActs();
+  }
+
+  var stageCanvas = h('canvas', { class: 'mech-viewer' });   // 使い回す(WebGLコンテキストを作り直さない)
+  var readoutEl = h('div', { class: 'hangar-readout' });
   var tabsRow = h('div', { class: 'tabs' });
   var cardList = h('div', { class: 'card-list' });
   var colorRow = h('div', { class: 'color-row' });
   var nameInput = h('input', { type: 'text', maxlength: 16, placeholder: '機体名(自分だけに表示)' });
   var slotGrid = h('div', { class: 'slot-grid' });
-  var equipBtn = h('button', { class: 'primary', style: 'width:100%' }, ['この機体で出撃']);
-  /* プレビュー用 canvas は「一度だけ」作って使い回す。renderStatsPanel はパーツを選ぶたびに走るため、
-     ここで新しい canvas を作ると game.js 側が毎回 WebGL コンテキストを作り直す(=コンテキスト上限で
-     古い描画が失われる)。mount() は同じ要素を渡せば付け替えになるので、要素の同一性を保つ。 */
-  var previewCanvas = h('canvas', { class: 'mech-preview' });
-  var viewerOpenBtn = h('button', { class: 'small ghost viewer-open' }, ['⛶ 機体鑑賞 — 手で動かして眺める']);
-  viewerOpenBtn.addEventListener('click', function () {
-    // 前回「撃破」のまま倒れている/歩き出したままにしない(開いたら必ず直立・停止から)
-    viewerIn.move = 'stop'; viewerIn.turn = 0; viewerIn.queue.push('rise');
-    // 鑑賞用ビルドは開くたびに工廠の現在構成からコピーし直す(前回の構成送りを持ち越さない)
-    var hb = state.lastHangar && state.lastHangar.build;
-    viewerBuild = hb ? JSON.parse(JSON.stringify(hb)) : null;
-    viewerStats = (state.lastHangar && state.lastHangar.stats) || null;
-    renderViewer(); ui.showScreen('viewer');
-  });
+  var buildSummaryLine = h('p', { class: 'muted build-summary' });
+  var costRow = h('div', { class: 'hangar-cost' });
+  var equipBtn = h('button', { class: 'primary hangar-go' }, ['この機体で出撃']);
+  var viewerMoveRow = h('div', { class: 'vw-btn-row' });
+  var viewerSpeedRow = h('div', { class: 'vw-btn-row' });
+  var viewerTurnRow = h('div', { class: 'vw-btn-row' });
+  var viewerActRow = h('div', { class: 'vw-btn-row' });
+  var viewerCamRow = h('div', { class: 'vw-btn-row' });
+  var viewerPartRows = h('div', { class: 'vw-part-list' });
 
   nameInput.addEventListener('input', function () {
     if (state.lastHangar && state.lastHangar.build) {
@@ -290,34 +339,88 @@ export function createUI(root, hooks) {
     if (state.lastHangar && state.lastHangar.build) hooks.onEquip && hooks.onEquip(state.lastHangar.build);
   });
 
-  var hangarScreen = h('section', { class: 'screen', dataset: { screen: 'hangar' } }, [
-    h('h2', { class: 'screen-title' }, ['工廠 — HANGAR BAY', h('a', { class: 'link', href: '#', onclick: function (e) { e.preventDefault(); ui.showScreen('title'); } }, ['← タイトルへ'])]),
-    statsPanel,
-    h('div', { class: 'panel' }, [
-      h('h3', {}, ['パーツ選択']),
-      tabsRow,
-      cardList
-    ]),
+  /* 保存スロットは呼び出し式のシート。8枚で 394px あり、常設するとパーツ選びを丸ごと下へ押し下げる
+     (=直したはずの「選ぶと数字が離れる」を自分で作り直すことになる)。触る頻度も低い。 */
+  var slotSheet = h('div', { class: 'slot-sheet', hidden: true });
+  var slotBtn = h('button', { class: 'small ghost' }, ['💾 スロット']);
+  function toggleSlotSheet(on) {
+    slotSheet.hidden = !on;
+    slotBtn.classList.toggle('active', !!on);
+  }
+  slotBtn.addEventListener('click', function () { toggleSlotSheet(slotSheet.hidden); });
+
+  /* 「組む」/「動かす」の面。パーツはどちらからも替えられる(組む=カードで見比べる / 動かす=◀▶で送る)。
+     書き込み先はどちらも同じ実ビルドなので、二重管理にはならない。 */
+  var buildPane = h('div', { class: 'hangar-pane' }, [
+    h('div', { class: 'panel' }, [h('h3', {}, ['パーツ選択']), tabsRow, cardList]),
     h('div', { class: 'panel' }, [
       h('h3', {}, ['カラー / 機体名']),
       colorRow,
       h('div', { style: 'margin-top:10px' }, [nameInput]),
-      h('p', { class: 'field-note' }, ['この名前はあなたにだけ見えます(対戦相手には識別コードのみ表示)'])
-    ]),
+      h('p', { class: 'field-note' }, ['この名前はあなたにだけ見えます(対戦相手には識別コードのみ表示)']),
+      buildSummaryLine
+    ])
+  ]);
+  var movePane = h('div', { class: 'hangar-pane', hidden: true }, [
     h('div', { class: 'panel' }, [
-      h('h3', {}, ['保存スロット']),
-      slotGrid
+      h('h3', {}, ['移動']),
+      viewerMoveRow,
+      h('div', { class: 'vw-sub' }, ['歩調']), viewerSpeedRow,
+      h('div', { class: 'vw-sub' }, ['旋回']), viewerTurnRow
     ]),
-    equipBtn
+    h('div', { class: 'panel' }, [h('h3', {}, ['動作']), viewerActRow]),
+    h('div', { class: 'panel' }, [h('h3', {}, ['カメラ']), viewerCamRow]),
+    h('div', { class: 'panel' }, [h('h3', {}, ['構成を送って見比べる']), viewerPartRows])
+  ]);
+  var modeTabs = h('div', { class: 'tabs hangar-mode' });
+  function renderModeTabs() {
+    var modes = [{ key: 'build', label: '⚙ 組む' }, { key: 'move', label: '🎬 動かす' }];
+    mount(modeTabs, modes.map(function (m) {
+      return h('button', {
+        class: state.hangarPane === m.key ? 'active' : '',
+        onclick: function () {
+          state.hangarPane = m.key;
+          buildPane.hidden = m.key !== 'build';
+          movePane.hidden = m.key !== 'move';
+          renderModeTabs();
+        }
+      }, [m.label]);
+    }));
+  }
+
+  /* 予算超過のまま工廠を出ると、超過構成が出撃機体として確定する(次に演習を押すとトーストで
+     差し戻される = 2026-07-28 の「鑑賞の構成送りで出撃不能になる」事故と同じ入口)。
+     直編集にした以上、出撃ボタンの無効化だけでは離脱経路が塞がらないので、出る前に一度止める。
+     戻せる状態なので禁止はせず、気づかずに出ることだけを防ぐ。 */
+  function confirmLeaveHangar() {
+    var st = state.lastHangar || {};
+    var cost = (st.stats && st.stats.cost) || 0, budget = st.budget || 0;
+    if (cost <= budget) return true;
+    return window.confirm('予算超過のままです(総額 ' + cost.toLocaleString() + ' / 予算 ' + budget.toLocaleString() + ' C)。\n'
+      + 'このままでは出撃できません。工廠を出ますか?');
+  }
+
+  var hangarScreen = h('section', { class: 'screen wide hangar', dataset: { screen: 'hangar' } }, [
+    h('h2', { class: 'screen-title' }, ['工廠 — HANGAR BAY', h('a', { class: 'link', href: '#', onclick: function (e) { e.preventDefault(); if (confirmLeaveHangar()) ui.showScreen('title'); } }, ['← タイトルへ'])]),
+    h('div', { class: 'hangar-layout row' }, [
+      h('div', { class: 'hangar-stage' }, [stageCanvas]),
+      h('div', { class: 'hangar-ctl col' }, [readoutEl, modeTabs, buildPane, movePane])
+    ]),
+    /* スロットシートは **バーの中** に入れる。兄弟にして両方 sticky にすると、下端を取り合って
+       シートが総額バーと出撃ボタンを完全に覆い(実測 390×844 で 92px=バー全部・当たり判定も奪う)、
+       コピー廃止を支えている安全網そのものが無効になる。バーが伸びる形なら重ならない。 */
+    h('div', { class: 'hangar-bar' }, [slotSheet, costRow, h('div', { class: 'hangar-bar-btns' }, [slotBtn, equipBtn])])
   ]);
   els.screens.hangar = hangarScreen;
 
-  function renderStatsPanel() {
+  /* ---- readout: ステージのすぐ下に置く「常時見える数字」。
+     ここが離れると「選ぶ」と「効果を見る」が同時に成立しなくなる(旧・工廠の実測: パーツを選ぶ位置で
+     ゲージ 0/7 可視・総額は fold の 302px 上)。 ---- */
+  function renderReadout() {
     var st = state.lastHangar || {};
     var stats = st.stats || {};
     var maxRef = st.statMax || DEFAULT_MAX;
-    var weightRatio = stats.capacity > 0 ? stats.weight / stats.capacity : 0;
-    var over = weightRatio > 1 || stats.valid === false;
+    var over = (stats.capacity > 0 ? stats.weight / stats.capacity : 0) > 1 || stats.valid === false;
     function gauge(label, val, max, opts) {
       opts = opts || {};
       var display = opts.fmt ? opts.fmt(val) : Math.round(val);
@@ -327,34 +430,40 @@ export function createUI(root, hooks) {
         h('div', { class: cls }, [h('i', { style: 'width:' + pct(val, max) + '%' })])
       ]);
     }
-    mount(statsPanel, [
-      h('h3', {}, ['機体ステータス']),
-      previewCanvas,
-      viewerOpenBtn,
-      gauge('HP', stats.hp || 0, maxRef.hp),
-      gauge('速度', stats.speed || 0, maxRef.speed),
-      gauge('回避', (stats.evasion || 0) * 100, maxRef.evasion, { fmt: function (v) { return Math.round(v) + '%'; } }),
-      gauge('防御', (stats.defense || 0) * 100, maxRef.defense * 100, { fmt: function (v) { return Math.round(v) + '%'; } }),
-      gauge('EN出力', stats.enOut || 0, maxRef.enOut, { fmt: function (v) { return v.toFixed ? v.toFixed(1) : v; } }),
-      gauge('重量', stats.weight || 0, Math.max(stats.capacity || 1, 1), { danger: over, fmt: function () { return (stats.weight || 0) + ' / ' + (stats.capacity || 0); } }),
-      costGauge(st, stats),
-      stats.errors && stats.errors.length ? h('p', { class: 'muted', style: 'color:var(--red)' }, [stats.errors.join(' / ')]) : null,
-      h('div', {}, [
-        h('span', { class: 'muted' }, ['総合評価 ']),
+    mount(readoutEl, [
+      h('div', { class: 'readout-head' }, [
+        h('span', { class: 'readout-name' }, [(st.build && st.build.name) || '(無題の鋼機)']),
         h('span', { class: 'grade-badge' }, [calcGrade(stats, maxRef)])
       ]),
-      st.build ? h('p', { class: 'muted', style: 'margin-top:8px;line-height:1.8' }, [buildSummary(st)]) : null
+      h('div', { class: 'readout-gauges' }, [
+        gauge('HP', stats.hp || 0, maxRef.hp),
+        gauge('速度', stats.speed || 0, maxRef.speed),
+        gauge('回避', (stats.evasion || 0) * 100, maxRef.evasion, { fmt: function (v) { return Math.round(v) + '%'; } }),
+        gauge('防御', (stats.defense || 0) * 100, maxRef.defense * 100, { fmt: function (v) { return Math.round(v) + '%'; } }),
+        gauge('EN出力', stats.enOut || 0, maxRef.enOut, { fmt: function (v) { return v.toFixed ? v.toFixed(1) : v; } }),
+        gauge('重量', stats.weight || 0, Math.max(stats.capacity || 1, 1), { danger: over, fmt: function () { return (stats.weight || 0) + ' / ' + (stats.capacity || 0); } })
+      ]),
+      stats.errors && stats.errors.length ? h('p', { class: 'muted', style: 'color:var(--red)' }, [stats.errors.join(' / ')]) : null
     ]);
   }
-  function costGauge(st, stats) {
+
+  /* ---- 下の帯: 総額/予算 と 出撃。予算を超えている間は出撃そのものを止める
+     (旧・鑑賞のコピーが守っていた「予算超過の構成で出撃不能になる事故」は、ここが受け持つ)。 ---- */
+  function renderBar() {
+    var st = state.lastHangar || {};
+    var stats = st.stats || {};
     var budget = st.budget || 0;
     var cost = stats.cost || 0;
     var overBudget = cost > budget;
-    return h('div', { class: 'gauge-row cost-row' + (overBudget ? ' over' : '') }, [
+    mount(costRow, [
       h('div', { class: 'lbl' }, ['機体総額', h('b', {}, [cost.toLocaleString() + ' / ' + budget.toLocaleString() + ' C' + (overBudget ? '(予算超過)' : '')])]),
       h('div', { class: 'gauge' + (overBudget ? ' danger' : '') }, [h('i', { style: 'width:' + pct(cost, Math.max(budget, 1)) + '%' })])
     ]);
+    costRow.classList.toggle('over', overBudget);
+    equipBtn.disabled = overBudget;
+    equipBtn.textContent = overBudget ? '予算超過 — 出撃できません' : 'この機体で出撃';
   }
+
   function buildSummary(st) {
     var parts = st.parts || {};
     var b = st.build || {};
@@ -374,6 +483,18 @@ export function createUI(root, hooks) {
         onclick: function () { state.hangarTab = c.key; renderTabs(); renderCardList(); }
       }, [c.label]);
     }));
+  }
+  /* パーツを選ぶ = 実ビルドを書き換える。工廠のカードでも「動かす」の ◀▶ でも同じここを通す。 */
+  function applyPart(catKey, partId) {
+    var st = state.lastHangar;
+    if (!st || !st.build) return;
+    st.build[catKey] = partId;
+    var newStats = hooks.onPartChange ? hooks.onPartChange(st.build) : null;
+    if (newStats) st.stats = newStats;
+    // renderViewerActs も要る: 動作ボタンのラベルは装備中の武器名から作るので、
+    // ◀▶ で武装を替えたときに呼ばないと**前の武器名のまま**残る
+    renderReadout(); renderBar(); renderCardList(); renderViewerParts(); renderViewerActs();
+    buildSummaryLine.textContent = buildSummary(st);
   }
   function renderCardList() {
     var st = state.lastHangar;
@@ -402,14 +523,7 @@ export function createUI(root, hooks) {
       ];
       return h('button', {
         class: 'part-card' + (selected ? ' selected' : ''),
-        onclick: function () {
-          if (!st.build) return;
-          st.build[cat.key] = part.id;
-          var newStats = hooks.onPartChange ? hooks.onPartChange(st.build) : null;
-          if (newStats) st.stats = newStats;
-          renderStatsPanel();
-          renderCardList();
-        }
+        onclick: function () { applyPart(cat.key, part.id); }
       }, body);
     }));
   }
@@ -453,7 +567,8 @@ export function createUI(root, hooks) {
                 nameInput.value = st.build.name || '';
                 var newStats = hooks.onPartChange ? hooks.onPartChange(st.build) : null;
                 if (newStats) st.stats = newStats;
-                renderStatsPanel(); renderCardList(); renderColorRow();
+                renderHangarAll();
+                toggleSlotSheet(false);
                 ui.toast('スロット' + (idx + 1) + 'を読み込みました');
               }
             }, ['読込']),
@@ -468,67 +583,18 @@ export function createUI(root, hooks) {
         ]));
       })(s, i);
     }
+    mount(slotSheet, [
+      h('div', { class: 'slot-sheet-head' }, [
+        h('h3', {}, ['保存スロット']),
+        h('button', { class: 'small ghost', onclick: function () { toggleSlotSheet(false); } }, ['閉じる ✕'])
+      ]),
+      slotGrid
+    ]);
     mount(slotGrid, cells);
   }
 
-  /* ===================== viewer(機体鑑賞) =====================
-     工廠の機体を手で動かして眺める画面。キーボードは使わず「全ての動作をボタンで選ぶ」。
-     ここが持つのは DOM と入力状態(viewerIn)だけで、時計・姿勢・カメラ計算は game.js の
-     viewerTick が毎フレーム ui.viewerInput() を読んで進める(描画契約は r3d.js の scene と同じ)。 */
-  var VIEWER_MOVES = [
-    { key: 'stop',  label: '■ 停止' },
-    { key: 'fwd',   label: '▲ 前進' },
-    { key: 'back',  label: '▼ 後退' },
-    { key: 'left',  label: '◀ 左移動' },
-    { key: 'right', label: '右移動 ▶' }
-  ];
-  var VIEWER_SPEEDS = [
-    { key: 'slow',   label: '低速', mul: 0.30 },   // 大股のゆっくりした重い足取り(歩幅が伸びる)
-    { key: 'cruise', label: '巡航', mul: 0.65 },
-    { key: 'full',   label: '全速', mul: 1.00 }
-  ];
-  var VIEWER_TURNS = [
-    { key: -1, label: '↺ 左旋回' },
-    { key: 0,  label: '旋回停止' },
-    { key: 1,  label: '右旋回 ↻' }
-  ];
-  /* カメラ位置は機体の向きを基準にした方位角 az[deg](0=正面から顔を見る / 180=背面)と仰角 el[deg]。 */
-  var VIEWER_CAMS = [
-    { key: 'orbit',   label: '自動周回',     az: 38,  el: 16 },
-    { key: 'front',   label: '正面',         az: 0,   el: 11 },
-    { key: 'quarter', label: '斜め前',       az: 38,  el: 16 },
-    { key: 'side',    label: '側面',         az: 90,  el: 11 },
-    { key: 'rear',    label: '背面',         az: 180, el: 12 },
-    { key: 'top',     label: '俯瞰',         az: 45,  el: 52 },
-    { key: 'low',     label: 'ローアングル', az: 25,  el: -9 }
-  ];
-  var VIEWER_DIST = { min: 3.4, max: 24 };
-
-  var viewerIn = {
-    move: 'stop', speedKey: 'cruise', speedMul: 0.65, turn: 0,
-    cam: 'quarter', az: 38, el: 16, dist: 7.6,
-    repeat: false,
-    queue: []      // 単発アクション(game.js が毎フレーム空にする)
-  };
-  /* 鑑賞用ビルドは出撃機体(S.current)の「コピー」。構成送り/カラーはこのコピーだけを書き換え、
-     保存も工廠への反映もしない(高額構成に送ると演習が予算超過で出撃不能になる事故の再発防止)。
-     開くたびに viewerOpenBtn で工廠の現在構成から作り直す。 */
-  var viewerBuild = null, viewerStats = null;
-  function viewerDerive() {
-    if (hooks.onDeriveStats && viewerBuild) viewerStats = hooks.onDeriveStats(viewerBuild);
-  }
-
-  var viewerCanvas = h('canvas', { class: 'mech-viewer' });   // 使い回す(WebGLコンテキストを作り直さない)
-  var viewerMoveRow = h('div', { class: 'vw-btn-row' });
-  var viewerSpeedRow = h('div', { class: 'vw-btn-row' });
-  var viewerTurnRow = h('div', { class: 'vw-btn-row' });
-  var viewerActRow = h('div', { class: 'vw-btn-row' });
-  var viewerCamRow = h('div', { class: 'vw-btn-row' });
-  var viewerPartRows = h('div', { class: 'vw-part-list' });
-  var viewerColorRow = h('div', { class: 'color-row' });
-  var viewerInfo = h('div', { class: 'vw-info' });
-
-  function viewerQueue(a) { viewerIn.queue.push(a); }
+  /* ---- ステージの操作(旧・機体鑑賞)。姿勢/歩容/演出は戦闘と同じ computeMechPose を通る。 ---- */
+  function viewerQueue(a) { viewerManual(); viewerIn.queue.push(a); }
   function viewerCamPreset(key) {
     var c = VIEWER_CAMS.filter(function (x) { return x.key === key; })[0] || VIEWER_CAMS[2];
     viewerIn.cam = c.key; viewerIn.az = c.az; viewerIn.el = c.el;
@@ -539,22 +605,31 @@ export function createUI(root, hooks) {
   }
 
   function renderViewerMoves() {
-    mount(viewerMoveRow, VIEWER_MOVES.map(function (m) {
+    mount(viewerMoveRow, [
+      h('button', {
+        class: 'small' + (viewerIn.auto ? ' active' : ''),
+        onclick: function () {
+          viewerIn.auto = !viewerIn.auto;
+          if (viewerIn.auto) { viewerIn.move = 'stop'; viewerIn.turn = 0; }
+          renderViewerMoves(); renderViewerActs();
+        }
+      }, ['🎬 自動実演'])
+    ].concat(VIEWER_MOVES.map(function (m) {
       return h('button', {
-        class: 'small' + (viewerIn.move === m.key ? ' active' : ''),
-        onclick: function () { viewerIn.move = m.key; renderViewerMoves(); }
+        class: 'small' + (!viewerIn.auto && viewerIn.move === m.key ? ' active' : ''),
+        onclick: function () { viewerManual(); viewerIn.move = m.key; renderViewerMoves(); }
       }, [m.label]);
-    }));
+    })));
     mount(viewerSpeedRow, VIEWER_SPEEDS.map(function (s) {
       return h('button', {
         class: 'small' + (viewerIn.speedKey === s.key ? ' active' : ''),
-        onclick: function () { viewerIn.speedKey = s.key; viewerIn.speedMul = s.mul; renderViewerMoves(); }
+        onclick: function () { viewerManual(); viewerIn.speedKey = s.key; viewerIn.speedMul = s.mul; renderViewerMoves(); }
       }, [s.label]);
     }));
     mount(viewerTurnRow, VIEWER_TURNS.map(function (t) {
       return h('button', {
-        class: 'small' + (viewerIn.turn === t.key ? ' active' : ''),
-        onclick: function () { viewerIn.turn = t.key; renderViewerMoves(); }
+        class: 'small' + (!viewerIn.auto && viewerIn.turn === t.key ? ' active' : ''),
+        onclick: function () { viewerManual(); viewerIn.turn = t.key; renderViewerMoves(); }
       }, [t.label]);
     }));
   }
@@ -575,7 +650,7 @@ export function createUI(root, hooks) {
   }
   function renderViewerActs() {
     var st = state.lastHangar || {};
-    var b = viewerBuild || st.build || {};
+    var b = st.build || {};
     var wpns = (st.parts || {}).wpn || [];
     function wname(id) {
       var p = wpns.filter(function (x) { return x.id === id; })[0];
@@ -595,26 +670,25 @@ export function createUI(root, hooks) {
     }).concat([
       h('button', {
         class: 'small' + (viewerIn.repeat ? ' active' : ''),
-        onclick: function () { viewerIn.repeat = !viewerIn.repeat; renderViewerActs(); }
+        /* くり返しは手動再生の機能(自動実演中は game.js 側が無視する)。押した見た目だけ active になって
+           何も起きない状態を作らないよう、ここでも手動へ降りる。 */
+        onclick: function () { viewerManual(); viewerIn.repeat = !viewerIn.repeat; renderViewerActs(); }
       }, ['🔁 くり返し'])
     ]));
   }
-  /* パーツ送り: 増えていくバリエーションを、画面を出たり入ったりせず見比べるための ◀ ▶。
-     書き換えるのは鑑賞用コピー(viewerBuild)だけ。出撃機体(S.current)には触れない。 */
+  /* パーツ送り: 動かしながら構成を見比べるための ◀ ▶。カードと同じ applyPart を通る=実ビルドを書き換える。 */
   function viewerCycle(catKey, partKey, dir) {
     var st = state.lastHangar;
-    if (!st || !viewerBuild) return;
+    if (!st || !st.build) return;
     var list = (st.parts || {})[partKey] || [];
     if (!list.length) return;
-    var i = list.map(function (p) { return p.id; }).indexOf(viewerBuild[catKey]);
+    var i = list.map(function (p) { return p.id; }).indexOf(st.build[catKey]);
     var n = ((i < 0 ? 0 : i) + dir + list.length) % list.length;
-    viewerBuild[catKey] = list[n].id;
-    viewerDerive();
-    renderViewerParts(); renderViewerActs(); renderViewerInfo();
+    applyPart(catKey, list[n].id);
   }
   function renderViewerParts() {
     var st = state.lastHangar || {};
-    var b = viewerBuild || st.build || {};
+    var b = st.build || {};
     mount(viewerPartRows, CATS.map(function (c) {
       var list = (st.parts || {})[c.partKey] || [];
       var cur = list.filter(function (p) { return p.id === b[c.key]; })[0];
@@ -627,40 +701,6 @@ export function createUI(root, hooks) {
         h('button', { class: 'small', onclick: function () { viewerCycle(c.key, c.partKey, 1); } }, ['▶'])
       ]);
     }));
-    mount(viewerColorRow, COLOR_PRESETS.map(function (hex) {
-      return h('button', {
-        class: 'swatch' + (hex === b.color ? ' selected' : ''),
-        style: 'background:' + hex,
-        onclick: function () {
-          if (!viewerBuild) return;
-          viewerBuild.color = hex;
-          viewerDerive();
-          renderViewerParts();
-        }
-      }, []);
-    }));
-  }
-  function renderViewerInfo() {
-    var st = state.lastHangar || {};
-    var b = viewerBuild || st.build || null;
-    var stats = viewerStats || st.stats || {};
-    var budget = st.budget || 0;
-    var cost = stats.cost || 0;
-    var over = cost > budget;
-    mount(viewerInfo, [
-      h('div', { class: 'vw-info-name' }, [(b && b.name) || '(無題の鋼機)']),
-      h('div', { class: 'muted' }, [
-        'HP ' + Math.round(stats.hp || 0) + ' ・ 速度 ' + Math.round(stats.speed || 0) +
-        ' ・ 回避 ' + Math.round((stats.evasion || 0) * 100) + '%' +
-        ' ・ 重量 ' + (stats.weight || 0) + '/' + (stats.capacity || 0)
-      ]),
-      h('div', { class: 'muted' + (over ? ' vw-over' : '') }, [
-        '機体総額 ' + cost.toLocaleString() + ' / ' + budget.toLocaleString() + ' C' + (over ? '(予算超過)' : '')
-      ])
-    ]);
-  }
-  function renderViewer() {
-    renderViewerMoves(); renderViewerCams(); renderViewerActs(); renderViewerParts(); renderViewerInfo();
   }
 
   /* 画面ドラッグで自由に回す/寄る(ボタンだけでも完結するが、眺める用の直接操作も残す) */
@@ -685,35 +725,14 @@ export function createUI(root, hooks) {
       e.preventDefault();
       viewerZoom(e.deltaY > 0 ? 1.08 : 0.93);
     }, { passive: false });
-  })(viewerCanvas);
+  })(stageCanvas);
 
-  var viewerScreen = h('section', { class: 'screen wide', dataset: { screen: 'viewer' } }, [
-    h('h2', { class: 'screen-title' }, ['機体鑑賞 — MECH VIEWER',
-      h('a', { class: 'link', href: '#', onclick: function (e) {
-        e.preventDefault();
-        ui.showScreen('hangar');   // 鑑賞用コピーは持ち帰らない(工廠と出撃機体はそのまま)
-      } }, ['← 工廠へ'])]),
-    h('div', { class: 'viewer-layout row' }, [
-      h('div', { class: 'viewer-stage' }, [viewerCanvas]),
-      h('div', { class: 'viewer-ctl col' }, [
-        h('div', { class: 'panel' }, [h('h3', {}, ['機体']), viewerInfo]),
-        h('div', { class: 'panel' }, [
-          h('h3', {}, ['移動']),
-          viewerMoveRow,
-          h('div', { class: 'vw-sub' }, ['歩調']), viewerSpeedRow,
-          h('div', { class: 'vw-sub' }, ['旋回']), viewerTurnRow
-        ]),
-        h('div', { class: 'panel' }, [h('h3', {}, ['動作']), viewerActRow]),
-        h('div', { class: 'panel' }, [h('h3', {}, ['カメラ']), viewerCamRow]),
-        h('div', { class: 'panel' }, [
-          h('h3', {}, ['構成を替えて見比べる']),
-          viewerPartRows,
-          h('div', { class: 'vw-sub' }, ['カラー']), viewerColorRow
-        ])
-      ])
-    ])
-  ]);
-  els.screens.viewer = viewerScreen;
+  function renderHangarAll() {
+    renderReadout(); renderBar(); renderModeTabs();
+    renderTabs(); renderCardList(); renderColorRow(); renderSlots();
+    renderViewerMoves(); renderViewerCams(); renderViewerActs(); renderViewerParts();
+    buildSummaryLine.textContent = buildSummary(state.lastHangar || {});
+  }
 
   /* ===================== sortie(演習) ===================== */
   var sortieBody = h('div', { class: 'col' });
@@ -961,7 +980,7 @@ export function createUI(root, hooks) {
 
   mount(root, [
     h('div', { class: 'scanlines', 'aria-hidden': 'true' }),
-    titleScreen, hangarScreen, viewerScreen, sortieScreen, arenaScreen, collectionScreen, graveyardScreen, battleScreen, resultScreen,
+    titleScreen, hangarScreen, sortieScreen, arenaScreen, collectionScreen, graveyardScreen, battleScreen, resultScreen,
     toastHost
   ]);
 
@@ -980,6 +999,27 @@ export function createUI(root, hooks) {
           s.classList.remove('active');
         }
       });
+      /* 画面を替えたら必ず先頭から見せる。hidden を付け替えるだけだと**前の画面のスクロール位置が残り**、
+         見出しと戻り導線が画面外から始まる(実測: 戦果パネル y≈1019 を押して演習へ移ると scrollY=289 のまま)。 */
+      if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo(0, 0);
+      /* 工廠に入ったら必ず「直立・停止・自動実演」から。前回「撃破」のまま倒れていたり、
+         歩き出したままだったりしない(旧・鑑賞の viewerOpenBtn が持っていた責務をここへ移した)。 */
+      if (name === 'hangar') {
+        /* repeat も必ず落とす。`vwLastAct`(最後に押した動作)は game.js 側で持ち越すようにしたので、
+           repeat だけ残ると **前回の工廠で 🔁 を点けたまま出た人が、次に「前進」を押した瞬間に
+           前回の攻撃を撃ち始める**(手動へ降りた途端に繰り返しの条件が揃うため)。
+           上のコメントの「直立・停止・自動実演から」に repeat も含める。 */
+        viewerIn.move = 'stop'; viewerIn.turn = 0; viewerIn.auto = true; viewerIn.repeat = false;
+        viewerIn.queue.push('rise');
+        /* **入場のたびに工廠を取り直す。** budget は renderHangar が呼ばれた時点の所持金を数値で
+           写したものなので、これが無いとタイトル経由で入ったときに古い予算のまま固まる
+           (所持金は増える一方なので必ず「厳しすぎる」側に倒れ、**予算内なのに出撃ボタンが無効**になり、
+           離脱確認まで誤発火する)。段2で予算が表示だけでなく出撃の可否を決めるようになったため、
+           表示のズレでは済まなくなった。 */
+        if (hooks.onEnterHangar) hooks.onEnterHangar();
+        renderViewerMoves(); renderViewerActs();
+        toggleSlotSheet(false);
+      }
     },
 
     renderTitle: function (st) {
@@ -993,20 +1033,13 @@ export function createUI(root, hooks) {
     renderHangar: function (st) {
       state.lastHangar = st || {};
       if (state.lastHangar.build) nameInput.value = state.lastHangar.build.name || '';
-      renderStatsPanel();
-      renderTabs();
-      renderCardList();
-      renderColorRow();
-      renderSlots();
-      renderViewer();
+      renderHangarAll();
     },
 
-    /* 機体鑑賞の入力状態(移動/歩調/旋回/カメラ/単発アクション待ち行列)。
-       game.js の viewerTick が毎フレーム読み、queue は読んだ側が空にする。 */
+    /* ステージの入力状態(自動実演/移動/歩調/旋回/カメラ/単発アクション待ち行列)。
+       game.js の viewerTick が毎フレーム読み、queue は読んだ側が空にする。
+       描画対象は常に工廠の実ビルド(S.current)= 鑑賞用コピーは廃止した(§4.4)。 */
     viewerInput: function () { return viewerIn; },
-
-    /* 鑑賞中の表示対象ビルド(S.current から分離したコピー)。未オープン時は null。 */
-    viewerBuild: function () { return viewerBuild; },
 
     renderCampaign: function (st) {
       st = st || {};
@@ -1214,28 +1247,66 @@ export function createUI(root, hooks) {
     },
 
     /* ---- 戦果ボックス(Ver5後半): 通常プレイでは #result 画面へ遷移せず、CONTROL の下にその場で戦果を出す。
-       ステージ(3D/レーダー/実況)は止めない。呼ばれるたびに中身を作り直す。opts は showResult と同形。 ---- */
+       ステージ(3D/レーダー/実況)は止めない。呼ばれるたびに中身を作り直す。opts は showResult と同形。
+
+       Ver7(docs/ux-flow.md §4.3): 中身を **bar(常に見える)** と **detail(たたまれる)** の2段に分ける。
+       モバイル/低背では style.css がこれを画面下端の固定シートにする——縦積みだと戦果は必ず fold の外に
+       落ちるため(実測 390×844 で y=858 対 fold=844、最悪 KIA 行入りで 306px 外)。
+       bar だけならステージ下の空き(実測 390×844=280px / 360×640=195px)に収まるので **3Dの余韻を1pxも隠さない**。
+       広い画面では detail も開いたままなので、この分割は見た目に影響しない。 ---- */
     showAftermath: function (opts) {
       opts = opts || {};
       var cls = aftermathCls(opts.winTxt);
       var lines = (opts.statLines || []).map(function (s) { return h('div', {}, [s]); });
       var shareBtn = shareBtnEl(opts.shareData, '📤 シェア');
-      var retryBtn = h('button', { class: 'primary' }, [opts.retryLabel || '出撃選択へ']);
+      var retryBtn = h('button', {}, [opts.retryLabel || '出撃選択へ']);
       retryBtn.addEventListener('click', function () { opts.onRetry && opts.onRetry(); });
       var titleBtn = h('button', {}, ['タイトルへ']);
       titleBtn.addEventListener('click', function () { opts.onTitle && opts.onTitle(); });
+      var hangarBtn = null;
+      if (opts.onHangar) {
+        hangarBtn = h('button', {}, ['⚙ 工廠で直す']);
+        hangarBtn.addEventListener('click', function () { opts.onHangar(); });
+      }
+
+      /* 主ボタン: 「▶ 次の相手」があればそれ(勝った直後の最短)。無ければ従来どおり retry を主ボタンにする。 */
+      var primaryBtn;
+      if (opts.onNext) {
+        primaryBtn = h('button', { class: 'primary' }, [opts.nextLabel || '▶ 次の相手']);
+        primaryBtn.addEventListener('click', function () { opts.onNext(); });
+      } else {
+        primaryBtn = retryBtn;
+        primaryBtn.className = 'primary';
+      }
+
+      var toggleBtn = h('button', { class: 'small ghost aftermath-toggle' }, ['詳細 ▲']);
+      toggleBtn.addEventListener('click', function () {
+        var open = aftermathBox.classList.toggle('open');
+        toggleBtn.textContent = open ? '閉じる ▼' : '詳細 ▲';
+      });
+
+      var detailBtns = [shareBtn, replayBtnEl(opts.replayUrl), hangarBtn];
+      if (opts.onNext) detailBtns.push(retryBtn);   // 主ボタンに昇格していないときだけ detail 側へ
+      detailBtns.push(titleBtn);
 
       mount(aftermathBox, [
-        h('div', { class: 'aftermath-headline ' + cls }, [opts.winTxt || '']),
-        h('div', { class: 'aftermath-meta' }, [fmtDuration(opts.duration), ' ・ +' + (opts.credits || 0) + ' C']),
-        lines.length ? h('div', { class: 'stat-lines' }, lines) : null,
-        h('div', { class: 'aftermath-actions' }, [shareBtn, replayBtnEl(opts.replayUrl), retryBtn, titleBtn])
+        h('div', { class: 'aftermath-bar' }, [
+          h('div', { class: 'aftermath-headline ' + cls }, [opts.winTxt || '']),
+          h('div', { class: 'aftermath-meta' }, [fmtDuration(opts.duration), ' ・ +' + (opts.credits || 0) + ' C']),
+          h('div', { class: 'aftermath-primary' }, [primaryBtn, toggleBtn])
+        ]),
+        h('div', { class: 'aftermath-detail' }, [
+          lines.length ? h('div', { class: 'stat-lines' }, lines) : null,
+          h('div', { class: 'aftermath-actions' }, detailBtns)
+        ])
       ]);
+      aftermathBox.classList.remove('open');   // 試合ごとに「たたんだ状態」から(開閉は持ち越さない)
       aftermathBox.hidden = false;
     },
 
     hideAftermath: function () {
       aftermathBox.hidden = true;
+      aftermathBox.classList.remove('open');
       clear(aftermathBox);
     }
   };

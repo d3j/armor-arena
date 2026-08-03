@@ -217,7 +217,9 @@ function ambientStop() {
 // ---- UI ----
 const ui = createUI(document.getElementById('app'), {
   onPartChange(build) { S.current = build; save(); return deriveStats(build); },
-  onDeriveStats(build) { return deriveStats(build); },   // 鑑賞用コピーの表示専用(S.current に触れず保存もしない)
+  // 工廠に入るたびに呼ばれる。予算(所持金)・スロット・ステータスをその時点の S から取り直す
+  // = どの経路(タイトル/戦果/出撃)から入っても同じ値になる
+  onEnterHangar() { refreshHangar(); },
   onSaveBuild(build, slot) {
     S.slots[slot] = { build: JSON.parse(JSON.stringify(build)), cloud: false }; save();
     if (user && api) {
@@ -282,9 +284,7 @@ const ui = createUI(document.getElementById('app'), {
       // rank は数値index('auto'デモ)と文字('E'〜'S'、UIから)の両方を受ける
       const ri = typeof payload.rank === 'number' ? payload.rank : CAMPAIGN.findIndex(x => x.rank === payload.rank);
       const r = CAMPAIGN[ri]; if (!r) { ui.toast('不明なランクです'); return; }
-      const f = r.fights[payload.idx]; if (!f) return;
-      const fieldId = pickField((RANK_FIELDS[r.rank] || [])[payload.idx] || 'sekichu');
-      startBattle(S.current, f.build, pickSeed(), { mode, rank: r.rank, idx: payload.idx, reward: f.reward, enemyName: f.name, fieldId });
+      startCampaignFight(r.rank, payload.idx, payload.fieldId);
     } else if (mode === 'daily') {
       const d = dailyEnemy(todayStr());
       startBattle(S.current, d.build, pickSeed(), { mode, reward: d.reward, enemyName: d.name, fieldId: pickField(d.fieldId) });
@@ -302,6 +302,44 @@ const ui = createUI(document.getElementById('app'), {
   },
   onArenaFight() { doArenaFight(); },
 });
+/* 演習(campaign)の1戦を始める単一の入口。出撃画面からも、戦果の「▶ 次の相手」からも同じここを通る
+   (押す前の条件・戦場の決め方・ctx の形を1箇所に持つ)。fieldChoice は出撃画面での戦場選択
+   ('random' or 戦場id)。次戦へ持ち越すため ctx にも残す。 */
+function startCampaignFight(rank, idx, fieldChoice) {
+  const r = CAMPAIGN.find(x => x.rank === rank); if (!r) { ui.toast('不明なランクです'); return false; }
+  const f = r.fights[idx]; if (!f) return false;
+  if (overBudget(S.current)) {
+    ui.toast(`予算超過で出撃できません(総額${buildCost(S.current)} / 予算${S.credits}C)`); return false;
+  }
+  if (!AUTO && !STILL && !activePilot()) {
+    ui.toast('搭乗できるパイロットがいません — タイトルで登録してください'); return false;
+  }
+  const fieldId = (fieldChoice && fieldChoice !== 'random') ? fieldChoice
+    : ((RANK_FIELDS[rank] || [])[idx] || 'sekichu');
+  startBattle(S.current, f.build, pickSeed(),
+    { mode: 'campaign', rank, idx, reward: f.reward, enemyName: f.name, fieldId, fieldChoice });
+  return true;
+}
+
+/* 「次の相手」= **いま戦ったランクから先に**探した、解放済みランクの最初の未クリア戦。
+   ランク解放は「直前ランクをどれか1戦クリア」なので、下位に未クリアを残したまま上へ行けるのが正規の遊び方。
+   先頭から探すと、上位ランクで勝った直後に最下位ランクへ引き戻される(実測: D第1戦に勝つと E第2戦が出た)。
+   同ランクを先に見ることで、勝てば同ランクの次へ進み、**負ければ同じ相手が対象=「挑み直す」**になる。
+   クリア済みは決して対象にならないので、「勝った敵に勝ち続けて報酬を稼ぐ」導線
+   (報酬減衰 S.history が抑えている当のもの)にはならない。 */
+function nextUnclearedFight(fromRank) {
+  const scan = (ri) => {
+    if (ri > 0 && !(S.progress[CAMPAIGN[ri - 1].rank] || []).some(Boolean)) return null;   // 未解放ランクは飛ばす
+    const r = CAMPAIGN[ri], arr = S.progress[r.rank] || [];
+    for (let fi = 0; fi < r.fights.length; fi++) if (!arr[fi]) return { rank: r.rank, idx: fi, fight: r.fights[fi] };
+    return null;
+  };
+  const ri0 = fromRank ? Math.max(0, CAMPAIGN.findIndex(x => x.rank === fromRank)) : 0;
+  for (let ri = ri0; ri < CAMPAIGN.length; ri++) { const f = scan(ri); if (f) return f; }
+  for (let ri = 0; ri < ri0; ri++) { const f = scan(ri); if (f) return f; }   // 上が尽きたら取りこぼしを拾う
+  return null;   // 全戦クリア
+}
+
 let fightBusy = false;
 async function doArenaFight() {
     if (!requireLogin()) return;
@@ -372,12 +410,12 @@ function refreshCollection() {
     cosmetics: COSMETICS.colors.map(c => ({ id: c.id, name: c.name, price: c.price, priceMedals: medalPrice(c), color: c.hex, owned: S.cosmetics.includes(c.id) })) });
 }
 
-// ---- 工廠の機体プレビュー(回転展示。canvasが可視のときだけ描く) ----
-let pvR3d = null, pvCanvas = null, pvMesh = null, pvKey = '';
-let pvWalk = 0, pvLastNow = 0;
-let pvX = 500, pvY = 500;   // プレビュー機体のワールド位置(実際に地面を移動させる=歩行と地面が連動する)
+// ---- 工廠ステージの自動実演(旧・工廠プレビューの巡回。手を触れていない間はこれが動く) ----
+// St4 までは「工廠プレビュー(自動)」と「機体鑑賞(手動)」が別画面・別レンダラだったが、
+// ux-flow.md §4.4 で1画面に統合した。実演の振り付け(previewMove/previewFx)はそのまま使い、
+// 描画は viewerTick 1本に集約している(レンダラのインスタンスも 3→2 に減った)。
 const PV_SPEED = 12;        // 見せ場用の歩行速度[m/s](落ち着いた大股)。歩容は実移動距離で駆動される。
-// 工廠プレビューの移動デモ: 前進→停止→後退→停止→右ストレイフ→左ストレイフ を巡回して見せる(③④)。
+// 移動デモ: 前進→停止→後退→停止→右ストレイフ→左ストレイフ を巡回して見せる(③④)。
 // 戦闘と同じ moveLocal を合成し、脚の運び・体幹リーン・上下バウンス・砂煙が工廠でも出るようにする。
 const PV_CYCLE = 20;   // プレビュー実演の1周期[s](移動デモ+アクション実演)
 function previewMove(t) {
@@ -416,40 +454,8 @@ function previewFx(t) {
   }
   return { attack, hitFx, dodgeFx };
 }
-function previewTick(now) {
-  const c = document.querySelector('.mech-preview');
-  if (!c || c.offsetParent === null) return;      // 工廠画面が出ていない間は何もしない
-  if (c !== pvCanvas) {                            // renderHangar が作り直したら追従
-    pvCanvas = c; pvR3d = makeR3D(c); pvKey = '';
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const rct = c.getBoundingClientRect();
-    if (rct.width > 0) { c.width = Math.round(rct.width * dpr); c.height = Math.round(rct.height * dpr); }
-  }
-  const key = JSON.stringify([S.current.frame, S.current.legs, S.current.gen, S.current.armor, S.current.wpnR, S.current.wpnL, S.current.color]);
-  if (key !== pvKey) { pvKey = key; try { pvMesh = mechMesh(S.current, PARTS, S.current.color); } catch (e) { pvMesh = null; } }
-  if (!pvMesh) return;
-  const t = now / 1000;
-  const dt = pvLastNow ? Math.min(0.1, (now - pvLastNow) / 1000) : 0; pvLastNow = now;
-  const mv = previewMove(t);
-  pvWalk += dt * (mv.mag * 30) * 0.22;   // 非脚パーツ(履帯揺れ等)用。二脚/四脚の歩容は実移動距離で駆動される。
-  // 機体を実際にワールド移動させる=足が地面を掴み、地面が流れる(歩行の向きと地面が連動)。
-  // 向き h は固定し、カメラ周回で全方位を見せる(前進=+x / 右ストレイフ=-z を地面のスクロールとして見せる)。
-  const h = 0;
-  const fwdX = Math.cos(h), fwdZ = Math.sin(h), rgtX = Math.sin(h), rgtZ = -Math.cos(h);
-  pvX += (fwdX * mv.fwd + rgtX * mv.lat) * PV_SPEED * dt;
-  pvY += (fwdZ * mv.fwd + rgtZ * mv.lat) * PV_SPEED * dt;
-  const camAng = t * 0.35;
-  const fx = previewFx(t);
-  pvR3d.render({
-    mechs: [{ mesh: pvMesh, x: pvX, y: pvY, h, hp: 999, alive: true, walkPhase: pvWalk, moveLocal: mv,
-      attack: fx.attack, hitFx: fx.hitFx, dodgeFx: fx.dodgeFx }],
-    shots: [], blasts: [],
-    // カメラは移動する機体を周回追従(機体は常に中央、地面が流れる)。
-    camera: { eye: [pvX + Math.cos(camAng) * 7.2, 3.84, pvY + Math.sin(camAng) * 7.2], target: [pvX, 2.46, pvY] },
-  }, t);
-}
-// ---- 機体鑑賞(viewer): 工廠の機体を手で動かして眺める ----
-// 入力は ui.viewerInput()(ボタンで選んだ移動/歩調/旋回/カメラ + 単発アクションの待ち行列)。
+// ---- 工廠ステージ: 機体を動かしながら眺める(旧・機体鑑賞。工廠と同じ画面になった) ----
+// 入力は ui.viewerInput()(自動実演フラグ + ボタンで選んだ移動/歩調/旋回/カメラ + 単発アクションの待ち行列)。
 // ここが持つのは「時計」だけ: アクションを踏んだ時刻を覚え、r3d の age01(0..1)へ焼き直して scene に載せる。
 // 姿勢/歩容/演出は戦闘とまったく同じ computeMechPose を通る(鑑賞用の別実装を作らない)。sim.js には
 // 触れないので REPLAY_V の互換とは無関係。
@@ -483,7 +489,7 @@ const vwAge = (fx, dur, t) => { if (!fx) return null; const a = (t - fx.t0) / du
 
 function viewerTick(now) {
   const c = document.querySelector('.mech-viewer');
-  if (!c || c.offsetParent === null) return;       // 鑑賞画面が出ていない間は何もしない
+  if (!c || c.offsetParent === null) return;       // 工廠画面が出ていない間は何もしない
   if (c !== vwCanvas) { vwCanvas = c; vwR3d = makeR3D(c); vwKey = ''; vwCssW = 0; }
   const rct = c.getBoundingClientRect();
   if (rct.width > 0 && (rct.width !== vwCssW || rct.height !== vwCssH)) {   // 回転/リサイズ追従
@@ -491,8 +497,9 @@ function viewerTick(now) {
     vwCssW = rct.width; vwCssH = rct.height;
     c.width = Math.round(rct.width * dpr); c.height = Math.round(rct.height * dpr);
   }
-  // 描画対象は鑑賞用コピー(ui.viewerBuild)。出撃機体(S.current)は鑑賞では書き換わらない。
-  const build = (ui.viewerBuild && ui.viewerBuild()) || S.current;
+  // 描画対象は **出撃機体そのもの**(S.current)。鑑賞用コピーは廃止した(ux-flow.md §4.4)=
+  // 「別の場所で編集した結果が見えないところで本体に入る」構図そのものを無くした。
+  const build = S.current;
   const key = JSON.stringify([build.frame, build.legs, build.gen, build.armor, build.wpnR, build.wpnL, build.color]);
   if (key !== vwKey) { vwKey = key; try { vwMesh = mechMesh(build, PARTS, build.color); } catch (e) { vwMesh = null; } }
   if (!vwMesh) return;
@@ -500,29 +507,39 @@ function viewerTick(now) {
   const v = ui.viewerInput();
   const t = now / 1000;
   const dt = vwLastNow ? Math.min(0.1, (now - vwLastNow) / 1000) : 0; vwLastNow = now;
+  const auto = !!v.auto;
+  // 自動実演中は撃破状態を持ち越さない(倒れたまま実演が始まらないように)。
+  // **vwLastAct はここで消さない**: 毎フレーム潰すと、手動へ降りた直後も「最後に押した動作」が
+  // 空のままになり、「🔁 くり返し」を先に押す操作順で無反応になる(動作を1つ押すまで復帰しない)。
+  // 持ち越す代わりに、工廠へ入り直したときは ui.js 側で repeat を false に落としている
+  // (残すと、前回 🔁 を点けたまま出た人が移動を押した瞬間に前回の攻撃が走り出す)。
+  if (auto) vwDeadT = null;
   while (v.queue.length) vwFire(v.queue.shift(), t, build);
-  if (v.repeat && vwLastAct && t > vwActEnd + VW_REPEAT_GAP) vwFire(vwLastAct, t, build);
+  if (!auto && v.repeat && vwLastAct && t > vwActEnd + VW_REPEAT_GAP) vwFire(vwLastAct, t, build);
   const alive = vwDeadT == null;
 
-  // 移動: ボタンで選んだ向き × 歩調。fwd/lat(機体ローカル -1..1)が対地速度と歩容の両方を決める
+  // 移動: 自動実演のときは巡回の振り付け(previewMove)、手動のときはボタンで選んだ向き × 歩調。
+  // どちらも fwd/lat(機体ローカル -1..1)が対地速度と歩容の両方を決める
   // (低速ほど歩幅が伸びて重い足取りになる=戦闘と同じ moveLocal 契約)。
   const dir = VW_MOVE_DIR[v.move] || VW_MOVE_DIR.stop;
   const sp = alive ? (v.speedMul || 0) : 0;
-  const mv = { fwd: dir[0] * sp, lat: dir[1] * sp, mag: Math.min(1, Math.hypot(dir[0], dir[1]) * sp) };
-  if (alive) vwH += (v.turn || 0) * VW_TURN * dt;
+  const mv = auto ? previewMove(t)
+    : { fwd: dir[0] * sp, lat: dir[1] * sp, mag: Math.min(1, Math.hypot(dir[0], dir[1]) * sp) };
+  if (alive && !auto) vwH += (v.turn || 0) * VW_TURN * dt;
   const fwdX = Math.cos(vwH), fwdZ = Math.sin(vwH), rgtX = Math.sin(vwH), rgtZ = -Math.cos(vwH);
   vwX += (fwdX * mv.fwd + rgtX * mv.lat) * VW_SPEED * dt;
   vwY += (fwdZ * mv.fwd + rgtZ * mv.lat) * VW_SPEED * dt;
   vwWalk += dt * (mv.mag * 30) * 0.22;   // 非脚パーツ(履帯揺れ等)用
 
   const aAtk = vwAge(vwAtk, VW_DUR.atk, t), aHit = vwAge(vwHit, VW_DUR.hit, t), aDod = vwAge(vwDodge, VW_DUR.dodge, t);
+  const pfx = auto ? previewFx(t) : null;   // 自動実演の攻撃/被弾/回避(既に age01 の形)
   const mech = {
     mesh: vwMesh, x: vwX, y: vwY, h: vwH, hp: alive ? 999 : 0,
     alive, deadAge: alive ? 0 : t - vwDeadT, walkPhase: vwWalk, moveLocal: mv,
-    attack: aAtk != null ? { kind: vwAtk.kind, age01: aAtk, side: vwAtk.side } : null,
+    attack: pfx ? pfx.attack : (aAtk != null ? { kind: vwAtk.kind, age01: aAtk, side: vwAtk.side } : null),
     // 被弾は「正面からの着弾」= 押し込みは機体後方へ
-    hitFx: aHit != null ? { age01: aHit, dirX: -fwdX, dirZ: -fwdZ, mag: 0.85 } : null,
-    dodgeFx: aDod != null ? { age01: aDod, side: vwDodge.side } : null
+    hitFx: pfx ? pfx.hitFx : (aHit != null ? { age01: aHit, dirX: -fwdX, dirZ: -fwdZ, mag: 0.85 } : null),
+    dodgeFx: pfx ? pfx.dodgeFx : (aDod != null ? { age01: aDod, side: vwDodge.side } : null)
   };
 
   // カメラ: 機体の向きを基準にした方位角(0=正面から顔を見る)。自動周回はその方位角を回すだけなので、
@@ -542,10 +559,9 @@ function viewerTick(now) {
   vwR3d.render({ mechs: [mech], shots: [], blasts: [], camera: { eye, target } }, t);
 }
 
-// 工廠プレビューと機体鑑賞は同じ rAF で回す(表示中の canvas 側だけが描画する)。
+// 工廠ステージの rAF(工廠画面が出ているときだけ描画する)。
 function studioLoop(now) {
   requestAnimationFrame(studioLoop);
-  previewTick(now);
   viewerTick(now);
 }
 requestAnimationFrame(studioLoop);
@@ -637,6 +653,8 @@ function startBattle(myBuild, foeBuild, seed, ctx) {
   // **レーダー/実況タブのまま試合を始めると3Dが1フレームも回らず、逆行を見逃したまま次の試合へ入る**
   // (前の試合のラッチが残り、決着した瞬間に前試合の座標へカメラが固定される)。開始点で断ち切る。
   if (r3d.resetCamera) r3d.resetCamera();
+  // 前の試合の読み上げを断ち切る(戦果の「▶ 次の相手」は stopBattle を通らずここへ来るため)
+  if (window.speechSynthesis) try { speechSynthesis.cancel(); } catch (e) {}
   els.logview.textContent = '';   // 全行クリア(div でも有効)
   // 右ペイン: TGT-A(機体名) / TGT-B(機体名) — 機械的呼称+実名の併記
   if (els.hud.tgtSubA) els.hud.tgtSubA.textContent = `(${myName})`;
@@ -1115,10 +1133,22 @@ function finishBattle() {
   const replayUrl = battle.replayCode && !battle.surrendered
     ? location.origin + location.pathname + '?r=' + battle.replayCode : null;
   const rArgs = battle.replayArgs;
+  // 「▶ 次の相手」(docs/ux-flow.md §4.5): 演習/日替わりで、まだ乗れるパイロットが居るときだけ出す。
+  // KIA で搭乗員が居なくなった直後に押せてしまうと、トーストで差し戻すだけの空ボタンになるため。
+  const nf = (ctx.mode === 'campaign' || ctx.mode === 'daily') && !AUTO && !STILL && activePilot()
+    ? nextUnclearedFight(ctx.mode === 'campaign' ? ctx.rank : null) : null;
+  const nfSame = !!nf && ctx.mode === 'campaign' && nf.rank === ctx.rank && nf.idx === ctx.idx;
+  const nfChoice = ctx.fieldChoice;
   battle.summary = {
     winTxt: battle.surrendered ? 'SURRENDER' : myWin === true ? 'WIN' : myWin === false ? 'LOSE' : 'DRAW',
     myWin, duration: res.duration, credits, unlocked: unlockedNames, statLines, replayUrl,
     retryLabel: ctx.mode === 'arena' ? 'もう一度(再マッチ)' : ctx.mode === 'replay' ? 'もう一度観る' : '出撃選択へ',
+    nextLabel: nf ? (nfSame ? '▶ 挑み直す — ' : '▶ 次の相手 — ') + nf.fight.name : null,
+    onNext: nf ? () => { refreshTitle(); refreshCampaign(); startCampaignFight(nf.rank, nf.idx, nfChoice); } : null,
+    // refreshCampaign を必ず通す: 演習画面は refreshCampaign でしか作り直されないので、
+    // これを落とすと「勝ってランクが解放されたのに 🔒 のまま」がリロードまで残る(他の出口は全部呼んでいる)
+    onHangar: ctx.mode === 'replay' ? null
+      : () => { stopBattle(); refreshTitle(); refreshCampaign(); refreshHangar(); ui.showScreen('hangar'); },
     onRetry: () => {
       if (ctx.mode === 'arena') { doArenaFight(); return; }  // アリーナ再戦はサーバへ(ローカル再生で報酬を稼がせない)
       if (ctx.mode === 'replay') { startBattle(rArgs[0], rArgs[1], rArgs[2], rArgs[3]); return; }
